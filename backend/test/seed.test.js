@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { resetStore, seedDemoIfEmpty, getDb } from '../src/store.js';
+import { seedDemoIfEmpty, getDb } from '../src/store.js';
+import { resetAll } from './helpers.js';
 
 beforeEach(() => {
-  resetStore();
+  resetAll();
 });
 
 describe('demo seed', () => {

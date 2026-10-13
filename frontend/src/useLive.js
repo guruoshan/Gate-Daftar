@@ -20,21 +20,23 @@ export function useLive(siteId, lang) {
       })
       .catch(() => {});
 
-    const es = new EventSource(streamUrl(siteId, lang));
+    const es = new EventSource(streamUrl(siteId, lang), { withCredentials: true });
     esRef.current = es;
     es.addEventListener('hello', () => setLive(true));
-    es.addEventListener('snapshot', (ev) => {
+    es.addEventListener('delta', (ev) => {
       const d = JSON.parse(ev.data);
-      setSite(d.site);
-      setPeople(d.people || []);
-      setEntries(d.entries || []);
+      if (d.entity === 'entry' && d.entry) {
+        setEntries((prev) => {
+          const i = prev.findIndex((e) => e.id === d.entry.id);
+          if (i === -1) return [d.entry, ...prev];
+          const next = prev.slice();
+          next[i] = { ...next[i], ...d.entry };
+          return next;
+        });
+      } else if (d.entity === 'people' && Array.isArray(d.people)) {
+        setPeople(d.people);
+      }
       setLive(true);
-    });
-    es.addEventListener('entries', (ev) => {
-      setEntries(JSON.parse(ev.data) || []);
-    });
-    es.addEventListener('people', (ev) => {
-      setPeople(JSON.parse(ev.data) || []);
     });
     es.onerror = () => setLive(false);
     return () => {

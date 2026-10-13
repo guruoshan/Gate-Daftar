@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { IconCheck, IconX } from '../icons.jsx';
 
 export default function Approve({ t, lang, setLang }) {
   const { token } = useParams();
-  const [params] = useSearchParams();
-  const want = params.get('d');
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -18,15 +16,11 @@ export default function Approve({ t, lang, setLang }) {
       .then((d) => {
         if (stop) return;
         setData(d);
-        if ((want === 'approve' || want === 'deny') && d.entry?.status === 'waiting_approval') {
-          act(want, d);
-        }
       })
       .catch(() => setErr('not_found'));
     return () => {
       stop = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   async function act(decision, current) {

@@ -5,6 +5,7 @@ export default function ShareBar({ entry, t, onToast, compact }) {
   if (!entry) return null;
   const wa = publicize(entry.waLink);
   const sms = publicize(entry.smsBody || '');
+  if (!wa && !sms && !entry.pageUrl) return null;
   const phone = String(entry.managerPhone || '').replace(/\D/g, '');
   const smsHref = phone ? `sms:+${phone}?&body=${encodeURIComponent(sms)}` : '';
 

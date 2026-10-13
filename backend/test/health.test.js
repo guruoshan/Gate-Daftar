@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/index.js';
-import { resetStore } from '../src/store.js';
+import { resetAll } from './helpers.js';
 
 beforeEach(() => {
-  resetStore();
+  resetAll();
 });
 
 describe('health', () => {

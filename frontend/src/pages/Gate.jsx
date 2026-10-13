@@ -20,9 +20,9 @@ export default function Gate({ t, lang, setLang }) {
   const [o, setO] = useState({ name: '', phone: '', employeeId: '', reason: '', expectedMinutes: 60, managerPhone: '', managerName: '', personId: '' });
 
   useEffect(() => {
-    api.snapshot(siteId, lang).then((d) => {
+    api.publicSite(siteId).then((d) => {
       setSite(d.site);
-      setPeople(d.people || []);
+      setPeople([]);
     }).catch(() => setSite({ name: '', slug: siteId, id: siteId }));
   }, [siteId, lang]);
 
@@ -40,7 +40,7 @@ export default function Gate({ t, lang, setLang }) {
     }
     setBusy(true);
     try {
-      const d = await api.visitor(sid, { ...v, source: 'qr' });
+      const d = await api.gateVisitor(sid, { ...v });
       setDone({ kind: 'visitor', entry: d.entry });
     } catch (fail) {
       setErr(fail.body?.error === 'phone_invalid' ? 'phone' : 'fail');
@@ -58,7 +58,7 @@ export default function Gate({ t, lang, setLang }) {
     }
     setBusy(true);
     try {
-      const d = await api.outpass(sid, { ...o, source: 'qr', lang });
+      const d = await api.gateOutpass(sid, { ...o, lang });
       setDone({ kind: 'outpass', entry: d.entry });
     } catch (fail) {
       setErr(fail.body?.error === 'phone_invalid' ? 'phone' : 'fail');

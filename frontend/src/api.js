@@ -1,5 +1,6 @@
 async function req(path, opts = {}) {
   const res = await fetch(path, {
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
     ...opts,
   });
@@ -7,6 +8,7 @@ async function req(path, opts = {}) {
   if (!res.ok) {
     const err = new Error(data.error || 'request_failed');
     err.body = data;
+    err.status = res.status;
     throw err;
   }
   return data;
@@ -16,12 +18,15 @@ export const api = {
   health: () => req('/api/health'),
   createSite: (body) => req('/api/sites', { method: 'POST', body: JSON.stringify(body) }),
   site: (id) => req(`/api/sites/${id}`),
+  publicSite: (id) => req(`/api/sites/${id}/public`),
   snapshot: (id, lang) => req(`/api/sites/${id}/snapshot?lang=${lang || 'ar'}`),
   unlock: (body) => req('/api/guard/unlock', { method: 'POST', body: JSON.stringify(body) }),
   people: (id) => req(`/api/sites/${id}/people`),
   addPerson: (id, body) => req(`/api/sites/${id}/people`, { method: 'POST', body: JSON.stringify(body) }),
   visitor: (id, body) => req(`/api/sites/${id}/visitors`, { method: 'POST', body: JSON.stringify(body) }),
   outpass: (id, body) => req(`/api/sites/${id}/outpass`, { method: 'POST', body: JSON.stringify(body) }),
+  gateVisitor: (id, body) => req(`/api/sites/${id}/gate/visitor`, { method: 'POST', body: JSON.stringify(body) }),
+  gateOutpass: (id, body) => req(`/api/sites/${id}/gate/outpass`, { method: 'POST', body: JSON.stringify(body) }),
   search: (id, q) => req(`/api/sites/${id}/search?q=${encodeURIComponent(q || '')}`),
   admit: (eid) => req(`/api/entries/${eid}/admit`, { method: 'POST', body: '{}' }),
   exit: (eid) => req(`/api/entries/${eid}/exit`, { method: 'POST', body: '{}' }),

@@ -28,17 +28,10 @@ export default function Setup({ t, lang }) {
   useEffect(() => {
     if (!siteId) return;
     api.snapshot(siteId, lang).then((d) => {
-      setSite({ ...d.site, guardPin: d.site.guardPin });
+      setSite(d.site);
       setPeople(d.people || []);
-    }).catch(async () => {
-      try {
-        const unlocked = await api.unlock({ slug: siteId, pin: '1234' });
-        setSite(unlocked.site);
-        const snap = await api.snapshot(unlocked.site.id, lang);
-        setPeople(snap.people || []);
-      } catch {
-        setErr('site_not_found');
-      }
+    }).catch(() => {
+      setErr('site_not_found');
     });
   }, [siteId, lang]);
 

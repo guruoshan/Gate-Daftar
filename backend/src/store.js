@@ -70,6 +70,29 @@ export function resetStore() {
   db = emptyDb();
 }
 
+export function safeEntry(entry, { managerPhone = false } = {}) {
+  if (!entry) return null;
+  const out = { ...entry };
+  delete out.magicToken;
+  if (!managerPhone) delete out.managerPhone;
+  return out;
+}
+
+export function publicGateView(site) {
+  if (!site) return null;
+  return {
+    site: {
+      id: site.id,
+      slug: site.slug,
+      name: site.name,
+      lang: site.lang,
+      countryIso: site.countryIso || 'SA',
+    },
+    country: countryOf(site.countryIso),
+    options: { durations: [45, 60, 90, 180] },
+  };
+}
+
 export function getDb() {
   return db;
 }
@@ -79,6 +102,23 @@ function emitSite(siteId, type, payload) {
   bus.emit(`site:${siteId}`, msg);
   const site = getSite(siteId);
   if (site?.companyId) bus.emit(`co:${site.companyId}`, { ...msg, siteId });
+}
+
+function emitEntry(entry) {
+  if (!entry) return;
+  emitSite(entry.siteId, 'delta', {
+    entity: 'entry',
+    op: 'upsert',
+    entry: safeEntry(entry, { managerPhone: false }),
+  });
+}
+
+function emitPeople(siteId) {
+  emitSite(siteId, 'delta', {
+    entity: 'people',
+    op: 'replace',
+    people: listPeople(siteId),
+  });
 }
 
 function lastAuditHash() {
@@ -236,7 +276,7 @@ export function addPerson(siteId, { name, role, phone, managerPhone, employeeId 
   db.people.push(person);
   note(siteId, 'person_added', `${person.name} added`, { personId: person.id }, meta.actor, meta.ip, meta.device);
   persist();
-  emitSite(siteId, 'people', listPeople(siteId));
+  emitPeople(siteId);
   return { person };
 }
 
@@ -281,7 +321,7 @@ export function createVisitor(input, meta = {}) {
   db.entries.push(entry);
   note(input.siteId, 'visitor_created', `${entry.name} is waiting at the gate`, { entryId: entry.id, source: entry.source }, meta.actor, meta.ip, meta.device);
   persist();
-  emitSite(input.siteId, 'entries', listEntries(input.siteId));
+  emitEntry(entry);
   return { entry };
 }
 
@@ -329,7 +369,7 @@ export function createOutPass(input, meta = {}) {
   db.entries.push(entry);
   note(input.siteId, 'outpass_requested', `${entry.name} asked to go out`, { entryId: entry.id, source: entry.source }, meta.actor, meta.ip, meta.device);
   persist();
-  emitSite(input.siteId, 'entries', listEntries(input.siteId));
+  emitEntry(entry);
   return { entry };
 }
 
@@ -353,7 +393,7 @@ export function decideOutPass(magicToken, decision, denyReason = '', meta = {}) 
     meta.device,
   );
   persist();
-  emitSite(entry.siteId, 'entries', listEntries(entry.siteId));
+  emitEntry(entry);
   return { entry };
 }
 
@@ -364,7 +404,7 @@ function touch(entry, status, field, kind, message, meta) {
   entry.updatedAt = now();
   note(entry.siteId, kind, message, { entryId: entry.id }, meta.actor, meta.ip, meta.device);
   persist();
-  emitSite(entry.siteId, 'entries', listEntries(entry.siteId));
+  emitEntry(entry);
   return { entry };
 }
 
@@ -405,7 +445,7 @@ export function unapprovedLeave(entryId, reason, meta = {}) {
   entry.updatedAt = now();
   note(entry.siteId, 'unapproved_leave', `${entry.name} left without approval`, { entryId: entry.id, reason: entry.unapprovedReason }, meta.actor, meta.ip, meta.device);
   persist();
-  emitSite(entry.siteId, 'entries', listEntries(entry.siteId));
+  emitEntry(entry);
   return { entry };
 }
 
@@ -460,13 +500,15 @@ export function dashboard(siteId) {
 }
 
 export function exportRows(siteId, { from, to, status, kind } = {}) {
-  return listEntries(siteId).filter((e) => {
-    if (from && e.createdAt < from) return false;
-    if (to && e.createdAt > to) return false;
-    if (status && e.status !== status) return false;
-    if (kind && e.kind !== kind) return false;
-    return true;
-  });
+  return listEntries(siteId)
+    .filter((e) => {
+      if (from && e.createdAt < from) return false;
+      if (to && e.createdAt > to) return false;
+      if (status && e.status !== status) return false;
+      if (kind && e.kind !== kind) return false;
+      return true;
+    })
+    .map((e) => safeEntry(e, { managerPhone: true }));
 }
 
 export function seedDemoIfEmpty() {
@@ -519,9 +561,9 @@ export function snapshot(siteId) {
   const site = getSite(siteId);
   if (!site) return null;
   return {
-    site: { ...publicSite(site), guardPin: site.guardPin },
+    site: publicSite(site),
     people: listPeople(siteId),
-    entries: listEntries(siteId),
+    entries: listEntries(siteId).map((e) => safeEntry(e, { managerPhone: true })),
     events: db.events.filter((e) => e.siteId === siteId).slice(-80).reverse(),
     stats: dashboard(siteId),
   };

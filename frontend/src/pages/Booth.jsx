@@ -16,8 +16,6 @@ import {
 } from '../useLive.js';
 
 const DURS = [45, 60, 90, 180];
-const PIN_KEY = (slug) => `gd_pin_${slug}`;
-
 function statusLabel(t, status) {
   if (status === 'waiting_admit') return t.waitAdmit;
   if (status === 'waiting_approval') return t.waitMgr;
@@ -40,13 +38,8 @@ function badgeClass(status, overdue) {
 
 export default function Booth({ t, lang, setLang }) {
   const { siteId } = useParams();
-  const [authed, setAuthed] = useState(() => {
-    try {
-      return sessionStorage.getItem(PIN_KEY(siteId)) === '1';
-    } catch {
-      return false;
-    }
-  });
+  const [authed, setAuthed] = useState(false);
+  const [checking, setChecking] = useState(true);
   const [pin, setPin] = useState('');
   const [pinErr, setPinErr] = useState('');
   const [tab, setTab] = useState('waiting');
@@ -60,6 +53,23 @@ export default function Booth({ t, lang, setLang }) {
   const { site, people, entries, live: isLive } = live;
 
   useEffect(() => {
+    let stop = false;
+    api.snapshot(siteId, lang)
+      .then(() => {
+        if (!stop) setAuthed(true);
+      })
+      .catch(() => {
+        if (!stop) setAuthed(false);
+      })
+      .finally(() => {
+        if (!stop) setChecking(false);
+      });
+    return () => {
+      stop = true;
+    };
+  }, [siteId, lang]);
+
+  useEffect(() => {
     if (!toast) return undefined;
     const id = setTimeout(() => setToast(''), 2800);
     return () => clearTimeout(id);
@@ -68,9 +78,8 @@ export default function Booth({ t, lang, setLang }) {
   async function unlock(code) {
     setPinErr('');
     try {
-      await api.unlock({ slug: siteId, pin: code });
-      sessionStorage.setItem(PIN_KEY(siteId), '1');
-      setAuthed(true);
+       await api.unlock({ slug: siteId, pin: code });
+       setAuthed(true);
     } catch {
       setPinErr(t.pinBad);
       setPin('');
@@ -99,6 +108,14 @@ export default function Booth({ t, lang, setLang }) {
     inside: inside.length,
       search: q.trim() ? searched.length : entries.length,
   };
+
+  if (checking && !authed) {
+    return (
+      <main className="wrap">
+        <p className="lede">{t.booth}</p>
+      </main>
+    );
+  }
 
   if (!authed) {
     return (
@@ -343,6 +360,7 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
   const [kind, setKind] = useState('visitor');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [created, setCreated] = useState(null);
   const [v, setV] = useState({ name: '', phone: '', company: '', purpose: '', hostName: '', idNumber: '', cardNumber: '' });
   const [o, setO] = useState({ name: '', phone: '', employeeId: '', reason: '', expectedMinutes: 60, managerPhone: '', managerName: '', personId: '' });
   const managers = people.filter((p) => p.role === 'manager');
@@ -391,8 +409,10 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
           setBusy(false);
           return;
         }
-        await api.outpass(siteId, { ...o, source: 'guard', lang });
+        const made = await api.outpass(siteId, { ...o, source: 'guard', lang });
         onToast(t.outpass);
+        setCreated(made.entry);
+        return;
       }
       onClose();
     } catch (fail) {
@@ -405,6 +425,16 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
   return (
     <div className="modal-bg" onClick={onClose} role="presentation">
       <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+        {created ? (
+          <>
+            <h2>{t.outpass}</h2>
+            <p className="muted">{t.sayToken}</p>
+            <div className="token-xl">{created.dayToken}</div>
+            <ShareBar entry={created} t={t} onToast={onToast} />
+            <button type="button" className="btn" onClick={onClose}>{t.close}</button>
+          </>
+        ) : (
+          <>
         <h2>{t.createPass}</h2>
         <div className="seg">
           <button type="button" className={kind === 'visitor' ? 'btn' : 'ghost'} onClick={() => setKind('visitor')}>
@@ -487,6 +517,8 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
             <button type="submit" className="btn" disabled={busy}>{busy ? t.sending : t.submit}</button>
           </div>
         </form>
+          </>
+        )}
       </div>
     </div>
   );
