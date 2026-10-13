@@ -1,0 +1,538 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
+import { api } from '../api.js';
+import { IconPlus, IconQr } from '../icons.jsx';
+import ShareBar from '../components/ShareBar.jsx';
+import ManagerFields from '../components/ManagerFields.jsx';
+import PhoneField from '../components/PhoneField.jsx';
+import { entryFields, matchQuery, phoneOk } from '../countries.js';
+import {
+  approvedList,
+  fmtTime,
+  insideList,
+  isOverdue,
+  useLive,
+  waitingList,
+} from '../useLive.js';
+
+const DURS = [45, 60, 90, 180];
+const PIN_KEY = (slug) => `gd_pin_${slug}`;
+
+function statusLabel(t, status) {
+  if (status === 'waiting_admit') return t.waitAdmit;
+  if (status === 'waiting_approval') return t.waitMgr;
+  if (status === 'approved_out') return t.goOut;
+  if (status === 'inside') return t.onSite;
+  if (status === 'out') return t.stillOut;
+  if (status === 'returned') return t.returned;
+  if (status === 'denied') return t.denied;
+  if (status === 'unapproved_leave') return t.leftUnauth;
+  if (status === 'exited') return t.exited;
+  return status;
+}
+
+function badgeClass(status, overdue) {
+  if (overdue || status === 'denied' || status === 'unapproved_leave') return 'b-bad';
+  if (status === 'inside' || status === 'returned' || status === 'approved_out') return 'b-ok';
+  if (status === 'waiting_admit' || status === 'waiting_approval' || status === 'out') return 'b-wait';
+  return 'b-in';
+}
+
+export default function Booth({ t, lang, setLang }) {
+  const { siteId } = useParams();
+  const [authed, setAuthed] = useState(() => {
+    try {
+      return sessionStorage.getItem(PIN_KEY(siteId)) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [pin, setPin] = useState('');
+  const [pinErr, setPinErr] = useState('');
+  const [tab, setTab] = useState('waiting');
+  const [modal, setModal] = useState(null);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [toast, setToast] = useState('');
+  const [q, setQ] = useState('');
+  const [una, setUna] = useState(null);
+
+  const live = useLive(authed ? siteId : '', lang);
+  const { site, people, entries, live: isLive } = live;
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const id = setTimeout(() => setToast(''), 2800);
+    return () => clearTimeout(id);
+  }, [toast]);
+
+  async function unlock(code) {
+    setPinErr('');
+    try {
+      await api.unlock({ slug: siteId, pin: code });
+      sessionStorage.setItem(PIN_KEY(siteId), '1');
+      setAuthed(true);
+    } catch {
+      setPinErr(t.pinBad);
+      setPin('');
+    }
+  }
+
+  function press(n) {
+    const next = (pin + n).slice(0, 4);
+    setPin(next);
+    if (next.length === 4) unlock(next);
+  }
+
+  const waiting = waitingList(entries);
+  const approved = approvedList(entries);
+  const inside = insideList(entries);
+  const overdue = entries.filter(isOverdue);
+  const searched = useMemo(() => {
+    const query = q.trim();
+    if (!query) return entries;
+    return entries.filter((e) => matchQuery(entryFields(e), query));
+  }, [entries, q]);
+
+  const counts = {
+    waiting: waiting.length,
+    approved: approved.length,
+    inside: inside.length,
+      search: q.trim() ? searched.length : entries.length,
+  };
+
+  if (!authed) {
+    return (
+      <main className="wrap">
+        <h1>{t.pinUnlock}</h1>
+        <p className="lede">{siteId === 'demo' ? t.demoHint : t.booth}</p>
+        <div className="card">
+          <div className="token-xl" style={{ textAlign: 'center' }}>
+            {pin.padEnd(4, '·')}
+          </div>
+          {pinErr && <div className="field-err">{pinErr}</div>}
+          <div className="pin-pad">
+            {['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'].map((k) => (
+              <button
+                key={k || 'sp'}
+                type="button"
+                disabled={!k}
+                onClick={() => {
+                  if (k === '⌫') setPin((p) => p.slice(0, -1));
+                  else if (k) press(k);
+                }}
+              >
+                {k}
+              </button>
+            ))}
+          </div>
+          <div className="cta-row">
+            <button type="button" className="lang-btn" onClick={setLang} style={{ flex: 1 }}>
+              {t.lang}
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  const list =
+    tab === 'waiting' ? waiting : tab === 'approved' ? approved : tab === 'inside' ? inside : searched;
+
+  return (
+    <div>
+      <header className="topbar">
+        <div className="brand">
+          <span className="mark">GD</span>
+          <span>
+            <span className="brand-name">{site?.name || t.app}</span>
+            <span className="brand-tag">{t.booth}</span>
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span className="live">
+            <span className={`dot ${isLive ? '' : 'off'}`} />
+            {isLive ? t.live : t.offline}
+          </span>
+          <button type="button" className="lang-btn" onClick={setLang}>
+            {t.lang}
+          </button>
+        </div>
+      </header>
+
+      {overdue.length > 0 && (
+        <div className="overdue-strip">
+          {t.overdue}: {overdue.map((e) => e.name).join(' · ')}
+        </div>
+      )}
+
+      <div className="dual">
+        <button type="button" className="btn" onClick={() => setModal('create')} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
+          <IconPlus /> {t.createPass}
+        </button>
+        <button type="button" className="ghost" onClick={() => setQrOpen(true)} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
+          <IconQr /> {t.gateQr}
+        </button>
+      </div>
+
+      <div className="search-bar">
+        <label htmlFor="q">{t.search}</label>
+        <input
+          id="q"
+          type="search"
+          inputMode="search"
+          autoComplete="off"
+          value={q}
+          placeholder={t.searchPh}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setTab('search');
+          }}
+          onFocus={() => setTab('search')}
+        />
+      </div>
+
+      <nav className="tabs" aria-label={t.booth}>
+        {[
+          ['waiting', t.waiting],
+          ['approved', t.approved],
+          ['inside', t.inside],
+          ['search', t.search],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className={`tab ${tab === id ? 'on' : ''}`}
+            onClick={() => setTab(id)}
+          >
+            {label}
+            <small>{counts[id]}</small>
+          </button>
+        ))}
+      </nav>
+
+      <section className="list">
+        {list.length === 0 && (
+          <div className="empty">
+            {tab === 'waiting' && t.emptyWait}
+            {tab === 'approved' && t.emptyApproved}
+            {tab === 'inside' && t.emptyInside}
+            {tab === 'search' && (q ? t.noResults : t.emptySearch)}
+          </div>
+        )}
+        {list.map((entry) => (
+          <EntryCard
+            key={entry.id}
+            entry={entry}
+            t={t}
+            lang={lang}
+            onToast={setToast}
+            onUna={setUna}
+          />
+        ))}
+      </section>
+
+      {modal === 'create' && (
+        <CreatePass
+          t={t}
+          lang={lang}
+          siteId={site?.id || siteId}
+          iso={site?.countryIso || 'SA'}
+          people={people}
+          onClose={() => setModal(null)}
+          onToast={setToast}
+        />
+      )}
+      {qrOpen && <QrModal t={t} siteId={site?.slug || siteId} onClose={() => setQrOpen(false)} />}
+      {una && (
+        <UnapprovedModal
+          t={t}
+          entry={una}
+          onClose={() => setUna(null)}
+          onDone={() => {
+            setUna(null);
+            setToast(t.leftUnauth);
+          }}
+        />
+      )}
+      {toast && <div className="toast">{toast}</div>}
+    </div>
+  );
+}
+
+function EntryCard({ entry, t, lang, onToast, onUna }) {
+  const overdue = isOverdue(entry);
+  async function run(fn, okMsg) {
+    try {
+      await fn();
+      if (okMsg) onToast(okMsg);
+    } catch {
+      onToast(t.already);
+    }
+  }
+
+  return (
+    <article className="row">
+      <div className="row-top">
+        <div>
+          <div className="who">{entry.name}</div>
+          <div className="meta">
+            {entry.kind === 'visitor' ? t.visitor : t.outpass}
+            {` · ${t.token} ${entry.dayToken}`}
+            {entry.phone ? ` · ${entry.phone}` : ''}
+            {entry.employeeId ? ` · ${entry.employeeId}` : ''}
+            {entry.source === 'qr' ? ` · ${t.sourceQr}` : ` · ${t.sourceGuard}`}
+            {entry.createdAt ? ` · ${fmtTime(entry.createdAt, lang)}` : ''}
+          </div>
+          {entry.kind === 'visitor' && (
+            <div className="meta">
+              {[entry.company, entry.purpose, entry.hostName].filter(Boolean).join(' · ')}
+            </div>
+          )}
+          {entry.kind === 'outpass' && (
+            <div className="meta">
+              {entry.reason}
+              {entry.managerName ? ` · ${entry.managerName}` : ''}
+              {entry.expectedMinutes ? ` · ${entry.expectedMinutes}${t.minutes}` : ''}
+            </div>
+          )}
+        </div>
+        <span className={`badge ${badgeClass(entry.status, overdue)}`}>
+          {overdue ? t.overdue : statusLabel(t, entry.status)}
+        </span>
+      </div>
+      <div className="actions">
+        {entry.status === 'waiting_admit' && (
+          <button type="button" className="btn-ok" onClick={() => run(() => api.admit(entry.id), t.admit)}>
+            {t.admit}
+          </button>
+        )}
+        {entry.status === 'inside' && (
+          <button type="button" className="btn-in" onClick={() => run(() => api.exit(entry.id), t.exit)}>
+            {t.exit}
+          </button>
+        )}
+        {entry.status === 'waiting_approval' && (
+          <>
+            <ShareBar entry={entry} t={t} onToast={onToast} compact />
+            <button type="button" className="btn-bad" onClick={() => onUna(entry)}>
+              {t.unapproved}
+            </button>
+          </>
+        )}
+        {entry.status === 'approved_out' && (
+          <>
+            <button type="button" className="btn-ok" onClick={() => run(() => api.logOut(entry.id), t.logOut)}>
+              {t.logOut}
+            </button>
+            <button type="button" className="btn-bad" onClick={() => onUna(entry)}>
+              {t.unapproved}
+            </button>
+          </>
+        )}
+        {entry.status === 'out' && (
+          <button type="button" className="btn-in" onClick={() => run(() => api.logIn(entry.id), t.logIn)}>
+            {t.logIn}
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
+  const [kind, setKind] = useState('visitor');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [v, setV] = useState({ name: '', phone: '', company: '', purpose: '', hostName: '', idNumber: '', cardNumber: '' });
+  const [o, setO] = useState({ name: '', phone: '', employeeId: '', reason: '', expectedMinutes: 60, managerPhone: '', managerName: '', personId: '' });
+  const managers = people.filter((p) => p.role === 'manager');
+  const employees = people.filter((p) => p.role !== 'manager');
+
+  function pickEmp(id) {
+    const p = employees.find((x) => x.id === id);
+    if (!p) {
+      setO({ ...o, personId: '' });
+      return;
+    }
+    const mgr = people.find((x) => x.phone === p.managerPhone && x.role === 'manager');
+    setO({
+      ...o,
+      personId: p.id,
+      name: p.name,
+      phone: p.phone || o.phone,
+      employeeId: p.employeeId || '',
+      managerPhone: p.managerPhone || o.managerPhone,
+      managerName: mgr?.name || o.managerName,
+    });
+  }
+
+  function pickMgr(id) {
+    const m = managers.find((x) => x.id === id);
+    if (!m) return;
+    setO({ ...o, managerPhone: m.phone, managerName: m.name });
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    setErr('');
+    setBusy(true);
+    try {
+      if (kind === 'visitor') {
+        if (!v.name.trim() || !phoneOk(v.phone)) {
+          setErr(!v.name.trim() ? 'req' : 'phone');
+          setBusy(false);
+          return;
+        }
+        await api.visitor(siteId, { ...v, source: 'guard' });
+        onToast(t.visitor);
+      } else {
+        if (!o.name.trim() || !o.reason.trim() || !o.managerName.trim() || !phoneOk(o.managerPhone)) {
+          setErr(!phoneOk(o.managerPhone) ? 'phone' : 'req');
+          setBusy(false);
+          return;
+        }
+        await api.outpass(siteId, { ...o, source: 'guard', lang });
+        onToast(t.outpass);
+      }
+      onClose();
+    } catch (fail) {
+      setErr(fail.body?.error === 'phone_invalid' ? 'phone' : 'fail');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-bg" onClick={onClose} role="presentation">
+      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+        <h2>{t.createPass}</h2>
+        <div className="seg">
+          <button type="button" className={kind === 'visitor' ? 'btn' : 'ghost'} onClick={() => setKind('visitor')}>
+            {t.visitor}
+          </button>
+          <button type="button" className={kind === 'outpass' ? 'btn' : 'ghost'} onClick={() => setKind('outpass')}>
+            {t.outpass}
+          </button>
+        </div>
+        <form onSubmit={submit}>
+          {kind === 'visitor' ? (
+            <>
+              <label htmlFor="vn">{t.name}<span className="req">*</span></label>
+              <input id="vn" value={v.name} placeholder={t.namePh} onChange={(e) => setV({ ...v, name: e.target.value })} />
+              <PhoneField
+                id="vp"
+                label={t.phone}
+                required
+                iso={iso}
+                value={v.phone}
+                onChange={(phone) => setV({ ...v, phone })}
+                t={t}
+                lang={lang}
+                error={err === 'phone' ? t.phoneInvalid : ''}
+              />
+              <label htmlFor="vc">{t.company}</label>
+              <input id="vc" value={v.company} onChange={(e) => setV({ ...v, company: e.target.value })} />
+              <label htmlFor="vu">{t.purpose}</label>
+              <input id="vu" value={v.purpose} onChange={(e) => setV({ ...v, purpose: e.target.value })} />
+              <label htmlFor="vh">{t.host}</label>
+              <input id="vh" value={v.hostName} onChange={(e) => setV({ ...v, hostName: e.target.value })} />
+              <label htmlFor="vi">{t.idCard}</label>
+              <input id="vi" value={v.idNumber} onChange={(e) => setV({ ...v, idNumber: e.target.value })} />
+              <label htmlFor="vcd">{t.card}</label>
+              <input id="vcd" value={v.cardNumber} onChange={(e) => setV({ ...v, cardNumber: e.target.value })} />
+            </>
+          ) : (
+            <>
+              {employees.length > 0 && (
+                <>
+                  <label htmlFor="ep">{t.pickPerson}</label>
+                  <select id="ep" value={o.personId} onChange={(e) => pickEmp(e.target.value)}>
+                    <option value="">{t.orType}</option>
+                    {employees.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}{p.employeeId ? ` · ${p.employeeId}` : ''}</option>
+                    ))}
+                  </select>
+                </>
+              )}
+              <label htmlFor="on">{t.name}<span className="req">*</span></label>
+              <input id="on" value={o.name} placeholder={t.namePh} onChange={(e) => setO({ ...o, name: e.target.value })} />
+              <PhoneField
+                id="op"
+                label={t.phone}
+                iso={iso}
+                value={o.phone}
+                onChange={(phone) => setO({ ...o, phone })}
+                t={t}
+                lang={lang}
+              />
+              <label htmlFor="oid">{t.empId}</label>
+              <input id="oid" value={o.employeeId} onChange={(e) => setO({ ...o, employeeId: e.target.value })} />
+              <label htmlFor="or">{t.reason}<span className="req">*</span></label>
+              <input id="or" value={o.reason} placeholder={t.reasonPh} onChange={(e) => setO({ ...o, reason: e.target.value })} />
+              <label>{t.duration}</label>
+              <div className="seg">
+                {DURS.map((m) => (
+                  <button key={m} type="button" className={o.expectedMinutes === m ? 'btn' : 'ghost'} onClick={() => setO({ ...o, expectedMinutes: m })}>
+                    {m === 180 ? t.duration180 : m === 45 ? t.duration45 : m === 90 ? t.duration90 : t.duration60}
+                  </button>
+                ))}
+              </div>
+              <ManagerFields t={t} lang={lang} iso={iso} o={o} setO={setO} managers={managers} pickMgr={pickMgr} />
+            </>
+          )}
+          {err === 'phone' && kind !== 'visitor' && <div className="field-err">{t.phoneInvalid}</div>}
+          {err && err !== 'phone' && <div className="field-err">{t.required}</div>}
+          <div className="cta-row">
+            <button type="button" className="ghost" onClick={onClose}>{t.cancel}</button>
+            <button type="submit" className="btn" disabled={busy}>{busy ? t.sending : t.submit}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function QrModal({ t, siteId, onClose }) {
+  return (
+    <div className="modal-bg" onClick={onClose} role="presentation">
+      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog">
+        <h2>{t.gateQr}</h2>
+        <p className="muted">{t.gateHint}</p>
+        <div className="cta-row">
+          <Link className="btn" to={`/qr/${siteId}`} style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
+            {t.printQr}
+          </Link>
+          <button type="button" className="ghost" onClick={onClose}>{t.close}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UnapprovedModal({ t, entry, onClose, onDone }) {
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function go() {
+    setBusy(true);
+    try {
+      await api.unapproved(entry.id, reason);
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="modal-bg" onClick={onClose} role="presentation">
+      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog">
+        <h2>{t.confirmUnapproved}</h2>
+        <p className="muted">{entry.name}</p>
+        <label htmlFor="ur">{t.unapprovedReason}</label>
+        <input id="ur" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <div className="cta-row">
+          <button type="button" className="ghost" onClick={onClose}>{t.cancel}</button>
+          <button type="button" className="btn-bad" disabled={busy} onClick={go}>{t.unapproved}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
