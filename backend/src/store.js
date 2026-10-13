@@ -8,7 +8,7 @@ import { countryOf, normalizePhone, digits } from './countries.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '../data');
-const DATA_FILE = path.join(DATA_DIR, 'db.json');
+const DATA_FILE = process.env.GATE_DAFTAR_DATA_FILE || path.join(DATA_DIR, 'db.json');
 
 const bus = new EventEmitter();
 bus.setMaxListeners(400);
@@ -44,7 +44,12 @@ function migrate(parsed) {
   return dbx;
 }
 
+function skipPersist() {
+  return process.env.GATE_DAFTAR_SKIP_PERSIST === '1' || process.env.NODE_ENV === 'test';
+}
+
 function load() {
+  if (skipPersist()) return emptyDb();
   try {
     if (!fs.existsSync(DATA_FILE)) return emptyDb();
     return migrate(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
@@ -54,11 +59,20 @@ function load() {
 }
 
 function persist() {
+  if (skipPersist()) return;
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
 }
 
 let db = load();
+
+export function resetStore() {
+  db = emptyDb();
+}
+
+export function getDb() {
+  return db;
+}
 
 function emitSite(siteId, type, payload) {
   const msg = { type, payload, at: now() };

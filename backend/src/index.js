@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import {
   seedDemoIfEmpty,
   createSite,
@@ -28,13 +30,11 @@ import {
 } from './store.js';
 import { COUNTRIES, countryOf, waNumber } from './countries.js';
 
-const app = express();
+export const app = express();
 const PORT = Number(process.env.PORT || 3001);
 
 app.use(cors());
 app.use(express.json({ limit: '200kb' }));
-
-seedDemoIfEmpty();
 
 function originFrom(req) {
   if (process.env.PUBLIC_ORIGIN) return process.env.PUBLIC_ORIGIN.replace(/\/$/, '');
@@ -405,6 +405,17 @@ app.get('/api/entries/:id', (req, res) => {
   res.json({ entry, site: publicSite(site) });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  process.stdout.write(`gate-daftar api on ${PORT}\n`);
-});
+export function start() {
+  seedDemoIfEmpty();
+  return app.listen(PORT, '0.0.0.0', () => {
+    process.stdout.write(`gate-daftar api on ${PORT}\n`);
+  });
+}
+
+const launchedDirectly =
+  Boolean(process.argv[1]) &&
+  path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+
+if (launchedDirectly) {
+  start();
+}
