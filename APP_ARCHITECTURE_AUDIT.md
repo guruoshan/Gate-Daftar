@@ -385,7 +385,7 @@ Severity is relative to “real people at a real gate.”
 13. **Host header origin.** If `PUBLIC_ORIGIN` is unset, magic links follow `Origin` / `Referer` / `X-Forwarded-Host`. Link poisoning is possible behind a misconfigured proxy.
 14. **sessionStorage PIN flag.** Any script on the origin can set `gd_pin_* = 1` and skip the pad. The pad was never a server session.
 15. **Excel is CSV.** Users may believe they downloaded a real workbook. Formula injection in name fields (`=cmd|…`) is possible if opened in Excel.
-16. **PII in git-adjacent JSON.** Live `db.json` holds a real-looking owner email `guruoshan2208@gmail.com`, live PINs, phones.
+16. **PII in git-adjacent JSON.** Live `db.json` held a real-looking owner email (redacted), live PINs and phones.
 17. **No helmet, no body size beyond 200kb on JSON only, no request timeouts.** SSE connections are unbounded.
 
 ### Low / product

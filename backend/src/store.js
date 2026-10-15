@@ -3,9 +3,11 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { EventEmitter } from 'events';
-import { id, token, shortCode, now } from './ids.js';
+import { id, shortCode, now } from './ids.js';
 import { countryOf, normalizePhone, digits } from './countries.js';
 import { hashPin, generatePin } from './pins.js';
+import { PACKS, coercePack } from './packs.js';
+import { newMagicToken, hashToken, tokenExpiry, isExpired } from './tokens.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '../data');
@@ -13,8 +15,6 @@ const DATA_FILE = process.env.GATE_DAFTAR_DATA_FILE || path.join(DATA_DIR, 'db.j
 
 const bus = new EventEmitter();
 bus.setMaxListeners(400);
-
-const PACKS = ['manufacturing', 'warehouse', 'workshop', 'logistics', 'construction'];
 
 function emptyDb() {
   return { companies: [], sites: [], people: [], entries: [], events: [], audit: [] };
@@ -31,6 +31,7 @@ function migrate(parsed) {
   };
   dbx.sites.forEach((s) => {
     if (!s.countryIso) s.countryIso = 'SA';
+    s.pack = coercePack(s.pack);
     if (s.guardPin && !s.guardPinHash) {
       s.guardPinHash = hashPin(s.guardPin);
     }
@@ -79,6 +80,9 @@ export function safeEntry(entry, { managerPhone = false } = {}) {
   if (!entry) return null;
   const out = { ...entry };
   delete out.magicToken;
+  delete out.magicTokenHash;
+  delete out.magicTokenExpiresAt;
+  delete out.magicTokenUsedAt;
   if (!managerPhone) delete out.managerPhone;
   return out;
 }
@@ -103,10 +107,7 @@ export function getDb() {
 }
 
 function emitSite(siteId, type, payload) {
-  const msg = { type, payload, at: now() };
-  bus.emit(`site:${siteId}`, msg);
-  const site = getSite(siteId);
-  if (site?.companyId) bus.emit(`co:${site.companyId}`, { ...msg, siteId });
+  bus.emit(`site:${siteId}`, { type, payload, at: now() });
 }
 
 function emitEntry(entry) {
@@ -226,7 +227,12 @@ export function getEntry(entryId) {
 }
 
 export function getEntryByToken(magicToken) {
-  return db.entries.find((e) => e.magicToken === magicToken) || null;
+  const want = hashToken(magicToken);
+  return db.entries.find((e) => e.magicTokenHash === want) || null;
+}
+
+export function isMagicTokenExpired(entry) {
+  return isExpired(entry?.magicTokenExpiresAt);
 }
 
 export function getEntryByDayToken(siteId, dayToken) {
@@ -260,7 +266,7 @@ export function createSite({ name, ownerName, ownerEmail, lang = 'ar', pack, cou
     companyId: company.id,
     slug: `gd-${shortCode(6).toLowerCase()}`,
     name: company.name,
-    pack: PACKS.includes(pack) ? pack : 'manufacturing',
+    pack: coercePack(pack),
     ownerName: ownerName || '',
     ownerEmail: ownerEmail || '',
     lang: lang === 'en' ? 'en' : 'ar',
@@ -335,7 +341,8 @@ export function createVisitor(input, meta = {}) {
     managerPhone: '',
     source: input.source === 'qr' ? 'qr' : 'guard',
     dayToken: uniqueDayToken(input.siteId),
-    magicToken: '',
+    magicTokenHash: '',
+    magicTokenExpiresAt: '',
     denyReason: '',
     unapprovedReason: '',
     createdAt: now(),
@@ -362,6 +369,7 @@ export function createOutPass(input, meta = {}) {
   const empPhone = input.phone ? phoneForSite(site, input.phone) : { e164: '' };
   if (input.phone && empPhone.error) return { error: empPhone.error, expected: empPhone.expected };
   const minutes = Math.max(15, Number(input.expectedMinutes) || 60);
+  const magicToken = newMagicToken();
   const entry = {
     id: id('e_'),
     siteId: input.siteId,
@@ -383,7 +391,8 @@ export function createOutPass(input, meta = {}) {
     managerPhone: m.e164,
     source: input.source === 'qr' ? 'qr' : 'guard',
     dayToken: uniqueDayToken(input.siteId),
-    magicToken: token(18),
+    magicTokenHash: hashToken(magicToken),
+    magicTokenExpiresAt: tokenExpiry(),
     denyReason: '',
     unapprovedReason: '',
     createdAt: now(),
@@ -400,16 +409,18 @@ export function createOutPass(input, meta = {}) {
   note(input.siteId, 'outpass_requested', `${entry.name} asked to go out`, { entryId: entry.id, source: entry.source }, meta.actor, meta.ip, meta.device);
   persist();
   emitEntry(entry);
-  return { entry };
+  return { entry, magicToken };
 }
 
 export function decideOutPass(magicToken, decision, denyReason = '', meta = {}) {
   const entry = getEntryByToken(magicToken);
   if (!entry) return { error: 'not_found' };
   if (entry.kind !== 'outpass') return { error: 'not_outpass' };
+  if (isMagicTokenExpired(entry)) return { error: 'token_expired' };
   if (entry.status !== 'waiting_approval') return { error: 'already_decided', entry };
   const ok = decision === 'approve';
   entry.status = ok ? 'approved_out' : 'denied';
+  entry.magicTokenUsedAt = now();
   entry.decidedAt = now();
   entry.updatedAt = now();
   entry.denyReason = ok ? '' : String(denyReason || '').trim();
@@ -604,7 +615,7 @@ export function seedDemoIfEmpty() {
   if (admitted.entry) admitVisitor(admitted.entry.id, { actor: { role: 'guard', name: 'Booth' } });
   createOutPass({ siteId: site.id, name: 'Yousef Hassan', employeeId: 'E-104', reason: 'Bank errand', expectedMinutes: 90, managerPhone: '966500111222', managerName: 'Khalid Al-Harbi', source: 'qr' }, { actor: { role: 'employee', name: 'Yousef Hassan' } });
   const approved = createOutPass({ siteId: site.id, name: 'Ahmed Farouk', employeeId: 'E-118', reason: 'Lunch', expectedMinutes: 45, managerPhone: '966500111222', managerName: 'Khalid Al-Harbi', source: 'guard' }, { actor: { role: 'guard', name: 'Booth' } });
-  if (approved.entry) decideOutPass(approved.entry.magicToken, 'approve', '', { actor: { role: 'manager', name: 'Khalid Al-Harbi', hint: 'seed' } });
+  if (approved.entry) decideOutPass(approved.magicToken, 'approve', '', { actor: { role: 'manager', name: 'Khalid Al-Harbi', hint: 'seed' } });
   persist();
   return site;
 }
@@ -622,3 +633,4 @@ export function snapshot(siteId) {
 }
 
 export { digits, countryOf };
+export { PACKS, coercePack } from './packs.js';

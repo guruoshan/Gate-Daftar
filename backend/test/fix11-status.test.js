@@ -27,7 +27,8 @@ async function outpass(slug, cookie) {
       managerPhone: '966500111222',
       expectedMinutes: 45,
     });
-  return getDb().entries.find((e) => e.id === res.body.entry.id);
+  const entry = getDb().entries.find((e) => e.id === res.body.entry.id);
+  return { ...entry, magicToken: res.body.entry.pageUrl.split('/').pop() };
 }
 
 describe('Fix 11: only allowed status changes are accepted', () => {

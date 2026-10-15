@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -23,6 +24,7 @@ import {
   searchEntries,
   getEntry,
   getEntryByToken,
+  isMagicTokenExpired,
   subscribe,
   dashboard,
   exportRows,
@@ -31,6 +33,7 @@ import {
   resetGuardPin,
   getDb,
 } from './store.js';
+import { buildXlsx } from './xlsx.js';
 import { COUNTRIES, countryOf, waNumber } from './countries.js';
 import {
   createSession,
@@ -47,6 +50,22 @@ import { sendLoginCode } from './mailer.js';
 
 export const app = express();
 const PORT = Number(process.env.PORT || 3001);
+
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        'default-src': ["'self'"],
+        'frame-ancestors': ["'none'"],
+        'object-src': ["'none'"],
+        'base-uri': ["'self'"],
+      },
+    },
+    referrerPolicy: { policy: 'no-referrer' },
+    crossOriginResourcePolicy: { policy: 'same-site' },
+  }),
+);
 
 function allowedOrigins() {
   const list = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
@@ -77,20 +96,16 @@ const approveLimit = rateLimit({ name: 'approve', windowMs: 60 * 1000, max: 60 }
 const exportLimit = rateLimit({ name: 'export', windowMs: 60 * 60 * 1000, max: 40 });
 const ownerLimit = rateLimit({ name: 'owner', windowMs: 15 * 60 * 1000, max: 20 });
 
-function originFrom(req) {
-  if (process.env.PUBLIC_ORIGIN) return process.env.PUBLIC_ORIGIN.replace(/\/$/, '');
-  const origin = req.headers.origin;
-  if (origin && /^https?:\/\//i.test(origin)) return origin;
-  const referer = req.headers.referer;
-  if (referer) {
-    try {
-      return new URL(referer).origin;
-    } catch {
-      /* ignore */
-    }
+export function assertStartupConfig(env = process.env) {
+  if (env.NODE_ENV === 'production' && !env.PUBLIC_ORIGIN) {
+    throw new Error('PUBLIC_ORIGIN must be set in production');
   }
-  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-  const host = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${PORT}`;
+}
+
+export function originFrom(req) {
+  if (process.env.PUBLIC_ORIGIN) return process.env.PUBLIC_ORIGIN.replace(/\/+$/, '');
+  const proto = req?.protocol || 'http';
+  const host = req?.headers?.host || `localhost:${PORT}`;
   return `${proto}://${host}`;
 }
 
@@ -117,8 +132,8 @@ function whatsappLink(phone, text) {
   return `https://wa.me/${n}?text=${encodeURIComponent(text)}`;
 }
 
-function outpassMessage(req, entry, lang = 'ar') {
-  const urls = approvalUrls(req, entry.magicToken);
+function outpassMessage(req, entry, lang = 'ar', magicToken = '') {
+  const urls = approvalUrls(req, magicToken);
   if (lang === 'en') {
     return [
       `Out-pass for ${entry.name}`,
@@ -147,14 +162,14 @@ function outpassMessage(req, entry, lang = 'ar') {
     .join('\n');
 }
 
-function shareableOutpass(req, entry, lang) {
+function shareableOutpass(req, entry, lang, magicToken = '') {
   if (!entry) return entry;
-  const urls = approvalUrls(req, entry.magicToken);
+  const urls = approvalUrls(req, magicToken);
   return {
     ...safeEntry(entry, { managerPhone: true }),
     ...urls,
-    waLink: whatsappLink(entry.managerPhone, outpassMessage(req, entry, lang)),
-    smsBody: outpassMessage(req, entry, lang),
+    waLink: whatsappLink(entry.managerPhone, outpassMessage(req, entry, lang, magicToken)),
+    smsBody: outpassMessage(req, entry, lang, magicToken),
   };
 }
 
@@ -442,7 +457,7 @@ app.post('/api/sites/:siteId/outpass', (req, res) => {
   );
   if (result.error) return fail(res, result);
   const lang = req.body?.lang === 'en' ? 'en' : site.lang;
-  res.json({ entry: shareableOutpass(req, result.entry, lang) });
+  res.json({ entry: shareableOutpass(req, result.entry, lang, result.magicToken) });
 });
 
 app.post('/api/sites/:siteId/gate/visitor', gateLimit, (req, res) => {
@@ -492,7 +507,7 @@ app.post('/api/sites/:siteId/gate/outpass', gateLimit, (req, res) => {
   );
   if (result.error) return fail(res, result);
   const lang = req.body?.lang === 'en' ? 'en' : site.lang;
-  const shared = shareableOutpass(req, result.entry, lang);
+  const shared = shareableOutpass(req, result.entry, lang, result.magicToken);
   res.status(201).json({
     entry: {
       ...publicCreated(result.entry),
@@ -571,9 +586,13 @@ app.get('/api/sites/:siteId/export', exportLimit, (req, res) => {
     return res.send(`\uFEFF${body}`);
   }
   if (fmt === 'xls' || fmt === 'xlsx' || fmt === 'excel') {
-    res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="gate-daftar-${site.slug}.xls"`);
-    return res.send(`\uFEFF${body}`);
+    const workbook = buildXlsx(rows, headers);
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="gate-daftar-${site.slug}.xlsx"`);
+    return res.send(workbook);
   }
   res.json({ rows });
 });
@@ -628,6 +647,7 @@ function approveView(entry) {
 app.get('/api/approve/:token', (req, res) => {
   const entry = getEntryByToken(req.params.token);
   if (!entry) return res.status(404).json({ error: 'not_found' });
+  if (isMagicTokenExpired(entry)) return res.status(410).json({ error: 'token_expired' });
   const site = getSite(entry.siteId);
   res.json({
     entry: approveView(entry),
@@ -645,7 +665,8 @@ app.post('/api/approve/:token', approveLimit, (req, res) => {
     clientMeta(req, null, { role: 'manager', name: entryPeek?.managerName || 'Manager' }),
   );
   if (result.error === 'not_found') return res.status(404).json(result);
-  if (result.error && result.error !== 'already_decided') return res.status(400).json(result);
+  if (result.error === 'token_expired') return res.status(410).json(result);
+  if (result.error) return res.status(400).json(result);
   res.json({ entry: approveView(result.entry) });
 });
 
@@ -659,6 +680,7 @@ app.get('/api/entries/:id', (req, res) => {
 });
 
 export function start() {
+  assertStartupConfig();
   seedDemoIfEmpty();
   const server = app.listen(PORT, '0.0.0.0', () => {
     process.stdout.write(`gate-daftar api on ${PORT}\n`);
