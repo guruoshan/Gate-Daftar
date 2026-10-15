@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { EventEmitter } from 'events';
 import { id, token, shortCode, now } from './ids.js';
 import { countryOf, normalizePhone, digits } from './countries.js';
+import { hashPin, generatePin } from './pins.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '../data');
@@ -30,6 +31,10 @@ function migrate(parsed) {
   };
   dbx.sites.forEach((s) => {
     if (!s.countryIso) s.countryIso = 'SA';
+    if (s.guardPin && !s.guardPinHash) {
+      s.guardPinHash = hashPin(s.guardPin);
+    }
+    delete s.guardPin;
     if (!s.companyId) {
       const company = {
         id: id('co_'),
@@ -126,6 +131,10 @@ function lastAuditHash() {
   return last?.hash || 'genesis';
 }
 
+function computeAuditHash(base) {
+  return crypto.createHash('sha256').update(base.prev + JSON.stringify(base)).digest('hex');
+}
+
 function writeAudit({ siteId, action, actor, entryId, reason, ip, device }) {
   const site = getSite(siteId);
   const row = {
@@ -143,9 +152,20 @@ function writeAudit({ siteId, action, actor, entryId, reason, ip, device }) {
     device: device || '',
     prev: lastAuditHash(),
   };
-  row.hash = crypto.createHash('sha256').update(JSON.stringify(row)).digest('hex').slice(0, 16);
+  row.hash = computeAuditHash(row);
   db.audit.push(row);
   return row;
+}
+
+export function verifyAudit() {
+  let prev = 'genesis';
+  for (const row of db.audit) {
+    const { hash, ...base } = row;
+    if (base.prev !== prev) return { ok: false, at: row.id, reason: 'prev_mismatch' };
+    if (computeAuditHash(base) !== hash) return { ok: false, at: row.id, reason: 'hash_mismatch' };
+    prev = hash;
+  }
+  return { ok: true, count: db.audit.length };
 }
 
 function note(siteId, kind, message, extra, actor, ip, device) {
@@ -175,9 +195,7 @@ export function getSiteBySlug(slug) {
   return db.sites.find((s) => s.slug === slug) || null;
 }
 
-export function getSiteByGuardPin(pin) {
-  return db.sites.find((s) => s.guardPin === pin) || null;
-}
+
 
 export function publicSite(site) {
   if (!site) return null;
@@ -236,6 +254,7 @@ export function createSite({ name, ownerName, ownerEmail, lang = 'ar', pack, cou
     createdAt: now(),
   };
   db.companies.push(company);
+  const pin = generatePin();
   const site = {
     id: id('site_'),
     companyId: company.id,
@@ -246,13 +265,24 @@ export function createSite({ name, ownerName, ownerEmail, lang = 'ar', pack, cou
     ownerEmail: ownerEmail || '',
     lang: lang === 'en' ? 'en' : 'ar',
     countryIso: company.countryIso,
-    guardPin: String(1000 + Math.floor(Math.random() * 9000)),
+    guardPinHash: hashPin(pin),
     createdAt: now(),
   };
   db.sites.push(site);
   writeAudit({ siteId: site.id, action: 'site_created', actor: { role: 'owner', name: ownerName || 'owner' } });
   persist();
-  return site;
+  return { site, pin };
+}
+
+export function resetGuardPin(siteId, meta = {}) {
+  const site = getSite(siteId);
+  if (!site) return { error: 'not_found' };
+  const pin = generatePin();
+  site.guardPinHash = hashPin(pin);
+  site.updatedAt = now();
+  writeAudit({ siteId, action: 'pin_reset', actor: meta.actor, ip: meta.ip, device: meta.device });
+  persist();
+  return { pin };
 }
 
 export function addPerson(siteId, { name, role, phone, managerPhone, employeeId }, meta = {}) {
@@ -397,8 +427,29 @@ export function decideOutPass(magicToken, decision, denyReason = '', meta = {}) 
   return { entry };
 }
 
+const TRANSITIONS = {
+  visitor: {
+    waiting_admit: { inside: 'admittedAt' },
+    inside: { exited: 'exitedAt' },
+  },
+  outpass: {
+    waiting_approval: { approved_out: 'decidedAt', denied: 'decidedAt' },
+    approved_out: { out: 'outAt' },
+    out: { returned: 'inAt' },
+  },
+};
+
+const UNAPPROVED_FROM = ['waiting_approval', 'approved_out', 'out'];
+
+function isAllowedTransition(kind, from, to) {
+  return Boolean(TRANSITIONS[kind]?.[from]?.[to]);
+}
+
 function touch(entry, status, field, kind, message, meta) {
   if (!entry) return { error: 'not_found' };
+  if (!isAllowedTransition(entry.kind, entry.status, status)) {
+    return { error: 'bad_transition', entry };
+  }
   entry.status = status;
   entry[field] = now();
   entry.updatedAt = now();
@@ -411,34 +462,33 @@ function touch(entry, status, field, kind, message, meta) {
 export function admitVisitor(entryId, meta = {}) {
   const entry = getEntry(entryId);
   if (!entry || entry.kind !== 'visitor') return { error: 'not_found' };
-  if (entry.status !== 'waiting_admit') return { error: 'bad_status', entry };
   return touch(entry, 'inside', 'admittedAt', 'visitor_in', `${entry.name} was welcomed in`, meta);
 }
 
 export function exitVisitor(entryId, meta = {}) {
   const entry = getEntry(entryId);
   if (!entry || entry.kind !== 'visitor') return { error: 'not_found' };
-  if (entry.status !== 'inside') return { error: 'bad_status', entry };
   return touch(entry, 'exited', 'exitedAt', 'visitor_out', `${entry.name} left the site`, meta);
 }
 
 export function logOut(entryId, meta = {}) {
   const entry = getEntry(entryId);
   if (!entry || entry.kind !== 'outpass') return { error: 'not_found' };
-  if (entry.status !== 'approved_out') return { error: 'bad_status', entry };
   return touch(entry, 'out', 'outAt', 'employee_out', `${entry.name} walked out the gate`, meta);
 }
 
 export function logIn(entryId, meta = {}) {
   const entry = getEntry(entryId);
   if (!entry || entry.kind !== 'outpass') return { error: 'not_found' };
-  if (entry.status !== 'out') return { error: 'bad_status', entry };
   return touch(entry, 'returned', 'inAt', 'employee_in', `${entry.name} came back`, meta);
 }
 
 export function unapprovedLeave(entryId, reason, meta = {}) {
   const entry = getEntry(entryId);
   if (!entry) return { error: 'not_found' };
+  if (entry.kind !== 'outpass' || !UNAPPROVED_FROM.includes(entry.status)) {
+    return { error: 'bad_transition', entry };
+  }
   entry.status = 'unapproved_leave';
   entry.unapprovedReason = String(reason || '').trim();
   entry.outAt = entry.outAt || now();
@@ -524,6 +574,7 @@ export function seedDemoIfEmpty() {
     createdAt: now(),
   };
   db.companies.push(company);
+  const demoPin = process.env.DEMO_PIN || generatePin();
   const site = {
     id: 'site_demo',
     companyId: company.id,
@@ -534,10 +585,11 @@ export function seedDemoIfEmpty() {
     ownerEmail: 'fahad@example.com',
     lang: 'ar',
     countryIso: 'SA',
-    guardPin: '1234',
+    guardPinHash: hashPin(demoPin),
     createdAt: now(),
   };
   db.sites.push(site);
+  process.stdout.write(`gate-daftar demo booth PIN: ${demoPin}\n`);
   [
     { name: 'Khalid Al-Harbi', role: 'manager', phone: '966500111222', managerPhone: '', employeeId: 'M-01' },
     { name: 'Noura Al-Otaibi', role: 'manager', phone: '966500333444', managerPhone: '', employeeId: 'M-02' },

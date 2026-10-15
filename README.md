@@ -41,9 +41,12 @@ You should see the Gate Daftar home page.
 
 ## Try the sample gate
 
-1. Open http://localhost:5173/booth/demo
-2. Type the sample booth code `1234`
-3. You should see a live list of people waiting, approved to leave, and already inside
+1. Look in the terminal that is running the app for a line that says `gate-daftar demo booth PIN:` and note the number next to it. If this is a brand new copy, that line is printed once when the sample data is first created.
+2. Open http://localhost:5173/booth/demo
+3. Type that six digit booth code
+4. You should see a live list of people waiting, approved to leave, and already inside
+
+The booth code is never written down in the code or stored in plain form. The owner can change it from the setup page, and the new code is shown once.
 
 The public gate form (what a visitor scans) is http://localhost:5173/g/demo
 

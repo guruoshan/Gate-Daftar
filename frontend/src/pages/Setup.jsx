@@ -141,6 +141,24 @@ export default function Setup({ t, lang }) {
           <p className="muted">{packLabel(site.pack, lang)}</p>
           <label>{t.guardPin}</label>
            <div className="token-xl">{site.guardPin || '····'}</div>
+          {site.guardPin && <p className="muted">{t.newPinOnce}</p>}
+          <div className="cta-row">
+            <button
+              type="button"
+              className="ghost"
+              onClick={async () => {
+                try {
+                  const d = await api.resetPin(site.slug || site.id);
+                  setSite((s) => ({ ...s, guardPin: d.pin }));
+                  setToast(t.newPinOnce);
+                } catch {
+                  setToast(t.required);
+                }
+              }}
+            >
+              {t.resetPin}
+            </button>
+          </div>
           <label>{t.guardLink}</label>
           <input readOnly value={boothUrl} />
           <div className="cta-row">

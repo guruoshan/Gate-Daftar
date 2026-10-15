@@ -86,10 +86,12 @@ export default function Booth({ t, lang, setLang }) {
     }
   }
 
+  const PIN_LEN = 6;
+
   function press(n) {
-    const next = (pin + n).slice(0, 4);
+    const next = (pin + n).slice(0, PIN_LEN);
     setPin(next);
-    if (next.length === 4) unlock(next);
+    if (next.length === PIN_LEN) unlock(next);
   }
 
   const waiting = waitingList(entries);
@@ -124,7 +126,7 @@ export default function Booth({ t, lang, setLang }) {
         <p className="lede">{siteId === 'demo' ? t.demoHint : t.booth}</p>
         <div className="card">
           <div className="token-xl" style={{ textAlign: 'center' }}>
-            {pin.padEnd(4, '·')}
+            {pin.padEnd(PIN_LEN, '·')}
           </div>
           {pinErr && <div className="field-err">{pinErr}</div>}
           <div className="pin-pad">
@@ -143,6 +145,15 @@ export default function Booth({ t, lang, setLang }) {
             ))}
           </div>
           <div className="cta-row">
+            <button
+              type="button"
+              className="btn"
+              disabled={pin.length < 4}
+              onClick={() => unlock(pin)}
+              style={{ flex: 1 }}
+            >
+              {t.submit}
+            </button>
             <button type="button" className="lang-btn" onClick={setLang} style={{ flex: 1 }}>
               {t.lang}
             </button>

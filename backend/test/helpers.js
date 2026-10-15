@@ -2,10 +2,14 @@ import request from 'supertest';
 import { app } from '../src/index.js';
 import { resetSessions } from '../src/sessions.js';
 import { resetStore } from '../src/store.js';
+import { resetRateLimits } from '../src/rateLimit.js';
+import { resetPinState } from '../src/pins.js';
 
 export function resetAll() {
   resetStore();
   resetSessions();
+  resetRateLimits();
+  resetPinState();
 }
 
 export function cookieFrom(res) {

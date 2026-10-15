@@ -8,6 +8,7 @@ import Gate from './pages/Gate.jsx';
 import Approve from './pages/Approve.jsx';
 import QrPage from './pages/QrPage.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import Login from './pages/Login.jsx';
 
 export default function App() {
   const [lang, setLang] = useState(readLang);
@@ -56,6 +57,7 @@ export default function App() {
         <Route path="/g/:siteId" element={<Gate t={t} lang={lang} setLang={toggleLang} />} />
         <Route path="/qr/:siteId" element={<QrPage t={t} lang={lang} />} />
         <Route path="/reports/:siteId" element={<Dashboard t={t} lang={lang} />} />
+        <Route path="/login" element={<Login t={t} />} />
         <Route path="/a/:token" element={<Approve t={t} lang={lang} setLang={toggleLang} />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

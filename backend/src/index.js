@@ -28,6 +28,8 @@ import {
   exportRows,
   listAudit,
   safeEntry,
+  resetGuardPin,
+  getDb,
 } from './store.js';
 import { COUNTRIES, countryOf, waNumber } from './countries.js';
 import {
@@ -36,13 +38,44 @@ import {
   setBoothCookie,
   requireSiteAccess,
   readSessions,
+  createAuthCode,
+  consumeAuthCode,
 } from './sessions.js';
+import { verifyPin, isLocked, recordFailure, clearFailures, pinKey } from './pins.js';
+import { rateLimit, acquireStream } from './rateLimit.js';
+import { sendLoginCode } from './mailer.js';
 
 export const app = express();
 const PORT = Number(process.env.PORT || 3001);
 
-app.use(cors({ origin: true, credentials: true }));
+function allowedOrigins() {
+  const list = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return list;
+}
+
+function originAllowed(origin) {
+  if (!origin) return true;
+  return allowedOrigins().includes(origin);
+}
+
+app.use((req, res, next) => {
+  if (!originAllowed(req.headers.origin)) {
+    return res.status(403).json({ error: 'origin_not_allowed' });
+  }
+  return next();
+});
+app.use(cors({ origin: (origin, cb) => cb(null, originAllowed(origin)), credentials: true }));
 app.use(express.json({ limit: '200kb' }));
+
+const gateLimit = rateLimit({ name: 'gate', windowMs: 60 * 1000, max: 30, envMax: 'RATE_LIMIT_GATE_MAX' });
+const createLimit = rateLimit({ name: 'create', windowMs: 60 * 60 * 1000, max: 20, envMax: 'RATE_LIMIT_CREATE_MAX' });
+const unlockLimit = rateLimit({ name: 'unlock', windowMs: 15 * 60 * 1000, max: 30, envMax: 'RATE_LIMIT_UNLOCK_MAX' });
+const approveLimit = rateLimit({ name: 'approve', windowMs: 60 * 1000, max: 60 });
+const exportLimit = rateLimit({ name: 'export', windowMs: 60 * 60 * 1000, max: 40 });
+const ownerLimit = rateLimit({ name: 'owner', windowMs: 15 * 60 * 1000, max: 20 });
 
 function originFrom(req) {
   if (process.env.PUBLIC_ORIGIN) return process.env.PUBLIC_ORIGIN.replace(/\/$/, '');
@@ -188,12 +221,12 @@ app.get('/api/countries', (_req, res) => {
   res.json({ countries: COUNTRIES });
 });
 
-app.post('/api/sites', (req, res) => {
+app.post('/api/sites', createLimit, (req, res) => {
   const { name, ownerName, ownerEmail, lang, pack, countryIso } = req.body || {};
   if (!name || !String(name).trim()) {
     return res.status(400).json({ error: 'name_required' });
   }
-  const site = createSite({ name, ownerName, ownerEmail, lang, pack, countryIso });
+  const { site, pin } = createSite({ name, ownerName, ownerEmail, lang, pack, countryIso });
   const session = createSession({
     role: 'owner',
     siteId: site.id,
@@ -204,7 +237,7 @@ app.post('/api/sites', (req, res) => {
   res.json({
     site: {
       ...publicSite(site),
-      guardPin: site.guardPin,
+      guardPin: pin,
       ownerName: site.ownerName,
     },
   });
@@ -222,11 +255,24 @@ app.get('/api/sites/:siteId/public', (req, res) => {
   res.json(publicGateView(site));
 });
 
-app.post('/api/guard/unlock', (req, res) => {
+app.post('/api/guard/unlock', unlockLimit, (req, res) => {
   const { pin, slug } = req.body || {};
-  const site = getSiteBySlug(String(slug || '').trim());
+  const cleanSlug = String(slug || '').trim();
+  if (!cleanSlug) return res.status(400).json({ error: 'slug_required' });
+  const site = getSiteBySlug(cleanSlug);
+  const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
   if (!site) return res.status(401).json({ error: 'bad_pin' });
-  if (!pin || String(pin).trim() !== site.guardPin) return res.status(401).json({ error: 'bad_pin' });
+  const key = pinKey(site.id, ip);
+  const lock = isLocked(key);
+  if (lock.locked) {
+    res.set('Retry-After', String(Math.ceil(lock.retryAfterMs / 1000)));
+    return res.status(429).json({ error: 'locked_out', retryAfterMs: lock.retryAfterMs });
+  }
+  if (!verifyPin(String(pin || ''), site.guardPinHash)) {
+    recordFailure(key);
+    return res.status(401).json({ error: 'bad_pin' });
+  }
+  clearFailures(key);
   const session = createSession({
     role: 'booth',
     siteId: site.id,
@@ -235,6 +281,52 @@ app.post('/api/guard/unlock', (req, res) => {
   });
   setBoothCookie(res, session);
   res.json({ site: publicSite(site) });
+});
+
+app.post('/api/sites/:siteId/pin/reset', (req, res) => {
+  const site = siteOr404(req, res);
+  if (!site) return;
+  const session = requireSiteAccess(req, res, site, ['owner']);
+  if (!session) return;
+  const result = resetGuardPin(site.id, clientMeta(req, session));
+  if (result.error) return fail(res, result);
+  res.json({ pin: result.pin });
+});
+
+app.post('/api/owner/request-code', ownerLimit, (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'email_required' });
+  const site = getDb()
+    .sites.find((s) => String(s.ownerEmail || '').trim().toLowerCase() === email);
+  if (site) {
+    const rec = createAuthCode(email);
+    try {
+      sendLoginCode(email, rec.code);
+    } catch {
+      return res.status(503).json({ error: 'mail_not_configured' });
+    }
+    if (process.env.NODE_ENV !== 'production') {
+      return res.json({ ok: true, devCode: rec.code });
+    }
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/owner/verify', ownerLimit, (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const code = String(req.body?.code || '').trim();
+  if (!email || !code) return res.status(400).json({ error: 'email_and_code_required' });
+  if (!consumeAuthCode(email, code)) return res.status(401).json({ error: 'bad_code' });
+  const site = getDb().sites.find((s) => String(s.ownerEmail || '').trim().toLowerCase() === email);
+  if (!site) return res.status(401).json({ error: 'bad_code' });
+  const session = createSession({
+    role: 'owner',
+    siteId: site.id,
+    companyId: site.companyId,
+    name: site.ownerName || 'Owner',
+  });
+  setOwnerCookie(res, session);
+  res.json({ ok: true, site: publicSite(site) });
 });
 
 app.get('/api/sites/:siteId/snapshot', (req, res) => {
@@ -252,6 +344,8 @@ app.get('/api/sites/:siteId/stream', (req, res) => {
   const site = siteOr404(req, res);
   if (!site) return;
   if (!requireSiteAccess(req, res, site, ['booth', 'owner'])) return;
+  const slot = acquireStream(site.id, req);
+  if (!slot.ok) return res.status(429).json({ error: 'too_many_streams' });
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -273,6 +367,7 @@ app.get('/api/sites/:siteId/stream', (req, res) => {
   req.on('close', () => {
     clearInterval(ping);
     unsub();
+    slot.release();
   });
 });
 
@@ -350,7 +445,7 @@ app.post('/api/sites/:siteId/outpass', (req, res) => {
   res.json({ entry: shareableOutpass(req, result.entry, lang) });
 });
 
-app.post('/api/sites/:siteId/gate/visitor', (req, res) => {
+app.post('/api/sites/:siteId/gate/visitor', gateLimit, (req, res) => {
   const site = siteOr404(req, res);
   if (!site) return;
   const { name, phone, company, purpose, hostName, idNumber, cardNumber } = req.body || {};
@@ -373,7 +468,7 @@ app.post('/api/sites/:siteId/gate/visitor', (req, res) => {
   res.status(201).json({ entry: publicCreated(result.entry) });
 });
 
-app.post('/api/sites/:siteId/gate/outpass', (req, res) => {
+app.post('/api/sites/:siteId/gate/outpass', gateLimit, (req, res) => {
   const site = siteOr404(req, res);
   if (!site) return;
   const { name, employeeId, reason, expectedMinutes, managerPhone, managerName, phone, company } = req.body || {};
@@ -435,7 +530,7 @@ app.get('/api/sites/:siteId/audit', (req, res) => {
   res.json({ audit: listAudit(site.id, Number(req.query.limit) || 200) });
 });
 
-app.get('/api/sites/:siteId/export', (req, res) => {
+app.get('/api/sites/:siteId/export', exportLimit, (req, res) => {
   const site = siteOr404(req, res);
   if (!site) return;
   if (!requireSiteAccess(req, res, site, ['owner'])) return;
@@ -540,7 +635,7 @@ app.get('/api/approve/:token', (req, res) => {
   });
 });
 
-app.post('/api/approve/:token', (req, res) => {
+app.post('/api/approve/:token', approveLimit, (req, res) => {
   const decision = req.body?.decision === 'deny' ? 'deny' : 'approve';
   const entryPeek = getEntryByToken(req.params.token);
   const result = decideOutPass(
@@ -565,9 +660,12 @@ app.get('/api/entries/:id', (req, res) => {
 
 export function start() {
   seedDemoIfEmpty();
-  return app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     process.stdout.write(`gate-daftar api on ${PORT}\n`);
   });
+  server.requestTimeout = Number(process.env.REQUEST_TIMEOUT_MS || 30000);
+  server.headersTimeout = Number(process.env.HEADERS_TIMEOUT_MS || 20000);
+  return server;
 }
 
 const launchedDirectly =
