@@ -4,8 +4,8 @@ import { app } from '../src/index.js';
 import { getDb } from '../src/store.js';
 import { createOwnedSite, resetAll } from './helpers.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 async function makeOutpass(cookie, slug) {
@@ -19,7 +19,7 @@ async function makeOutpass(cookie, slug) {
       managerPhone: '966500111222',
       expectedMinutes: 45,
     });
-  const stored = getDb().entries.find((e) => e.id === res.body.entry.id);
+  const stored = (await getDb()).entries.find((e) => e.id === res.body.entry.id);
   const token = res.body.entry.pageUrl.split('/').pop();
   return { res, stored, token };
 }
@@ -33,7 +33,7 @@ describe('Fix 5: GET never approves; only a button POST does', () => {
     expect(res.status).toBe(200);
     expect(res.body.entry.status).toBe('waiting_approval');
     expect(res.body.entry.name).toBe('Ahmed Farouk');
-    const again = getDb().entries.find((e) => e.id === stored.id);
+    const again = (await getDb()).entries.find((e) => e.id === stored.id);
     expect(again.status).toBe('waiting_approval');
   });
 

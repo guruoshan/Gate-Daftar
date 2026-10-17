@@ -4,8 +4,8 @@ import { app } from '../src/index.js';
 import { PACKS, coercePack, migrateDb } from '../src/packs.js';
 import { createOwnedSite, resetAll } from './helpers.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 describe('Fix 18: one source of truth for site types', () => {

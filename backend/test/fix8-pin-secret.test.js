@@ -3,8 +3,8 @@ import request from 'supertest';
 import { app } from '../src/index.js';
 import { createOwnedSite, unlockBooth, resetAll } from './helpers.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 describe('Fix 8: the PIN is never returned in payloads', () => {

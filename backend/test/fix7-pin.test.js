@@ -6,20 +6,20 @@ import { createOwnedSite, resetAll } from './helpers.js';
 
 const OLD_ENV = { ...process.env };
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
-afterEach(() => {
+afterEach(async () => {
   process.env.PIN_LOCK_BASE_MS = OLD_ENV.PIN_LOCK_BASE_MS;
   process.env.PIN_LOCK_MAX_FAILURES = OLD_ENV.PIN_LOCK_MAX_FAILURES;
-  resetAll();
+  await resetAll();
 });
 
 describe('Fix 7: PIN is hashed, per-site, and locks out', () => {
   it('does not store the PIN in plain text', async () => {
     const { site } = await createOwnedSite();
-    const stored = getDb().sites.find((s) => s.id === site.id);
+    const stored = (await getDb()).sites.find((s) => s.id === site.id);
     expect(stored.guardPin).toBeUndefined();
     expect(stored.guardPinHash).toMatch(/^scrypt\$/);
   });

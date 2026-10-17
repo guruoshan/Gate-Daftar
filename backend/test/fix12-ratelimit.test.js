@@ -9,8 +9,8 @@ keys.forEach((k) => {
   OLD[k] = process.env[k];
 });
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 afterEach(() => {

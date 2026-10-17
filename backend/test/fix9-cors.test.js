@@ -5,8 +5,8 @@ import { resetAll } from './helpers.js';
 
 const OLD = process.env.ALLOWED_ORIGINS;
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 afterEach(() => {

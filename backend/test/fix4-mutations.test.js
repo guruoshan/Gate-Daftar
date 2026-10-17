@@ -4,8 +4,8 @@ import { app } from '../src/index.js';
 import { getDb } from '../src/store.js';
 import { createOwnedSite, unlockBooth, hasSecretKeys, resetAll } from './helpers.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 describe('Fix 4: mutations need a session; public gate is write-only', () => {
@@ -85,7 +85,7 @@ describe('Fix 4: mutations need a session; public gate is write-only', () => {
     expect(res.body.entry.status).toBe('waiting_approval');
     expect(res.body.entry.magicToken).toBeUndefined();
     expect(res.body.people).toBeUndefined();
-    expect(getDb().entries.some((e) => e.kind === 'outpass')).toBe(true);
+    expect((await getDb()).entries.some((e) => e.kind === 'outpass')).toBe(true);
   });
 
   it('legacy public POST /visitors and /outpass without a session are rejected', async () => {

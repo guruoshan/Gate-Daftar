@@ -9,12 +9,29 @@ This is a working draft. Do not put real visitor or worker details into it until
 ## What you need on your computer
 
 - Node.js 20 or newer
+- PostgreSQL 15 (this is where the gate records are kept)
 - A terminal
+
+You do **not** need Docker. Docker is only one convenient way to get PostgreSQL; the steps below use a normal PostgreSQL install.
 
 ## How to run it on your computer
 
-1. Open a terminal in this folder.
-2. Copy the example settings file. On Mac or Linux:
+1. Install PostgreSQL. On Debian/Ubuntu:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y postgresql
+```
+
+2. Create the database and the app login once:
+
+```bash
+sudo -u postgres psql -c "CREATE USER gate WITH PASSWORD 'gate';"
+sudo -u postgres psql -c "CREATE DATABASE gate_daftar OWNER gate;"
+sudo -u postgres psql -c "CREATE DATABASE gate_daftar_test OWNER gate;"
+```
+
+3. Open a terminal in this folder and copy the example settings file. On Mac or Linux:
 
 ```bash
 cp .env.example .env
@@ -26,16 +43,26 @@ On Windows:
 copy .env.example .env
 ```
 
-3. Start both parts of the app:
+4. Start both parts of the app:
 
 ```bash
 chmod +x start.sh
 ./start.sh
 ```
 
-The first run installs packages. That can take a minute.
+The first run installs packages and creates the database tables. That can take a minute.
 
-4. Open a browser and go to http://localhost:5173
+5. Open a browser and go to http://localhost:5173
+
+### Using Docker instead (optional)
+
+If you have Docker, one command starts the database, the server and the website:
+
+```bash
+docker compose up --build
+```
+
+Then open http://localhost:5173.
 
 You should see the Gate Daftar home page.
 
@@ -54,13 +81,15 @@ The owner report page is http://localhost:5173/reports/demo
 
 ## How to run the checks
 
-These checks prove the server still answers and that sample data is fake.
+These checks prove the server still answers, that the database layer works, and that sample data is fake. They use the separate test database, so your real records are never touched.
 
 ```bash
 cd backend
 npm install
 npm test
 ```
+
+If PostgreSQL is not on the default address, set `TEST_DATABASE_URL` before running the checks.
 
 To build the website files:
 
@@ -77,13 +106,41 @@ npm run build
 | PUBLIC_ORIGIN | The public web address people use in the browser, with no trailing slash |
 | PORT | The number the server listens on (3001 is the default) |
 | ALLOWED_ORIGINS | Which websites may call the server, comma-separated |
-| DATABASE_URL | Database connection string (not used yet; reserved for a later change) |
-| SESSION_SECRET | A long random phrase used to protect login cookies (reserved for a later change) |
-| RETENTION_DAYS | How many days to keep old records (reserved for a later change) |
+| DATABASE_URL | Where the PostgreSQL database lives. Change this one line to move to another database |
+| TEST_DATABASE_URL | A separate database used only by the automated checks |
+| PG_POOL_MAX | How many database connections the server keeps open |
+| SESSION_SECRET | A long random phrase used to protect login cookies |
+| RETENTION_DAYS | How many days to keep old records (policy, not yet enforced automatically) |
+
+## Moving to a hosted database later
+
+The app does not care whether PostgreSQL runs on this computer or with a hosting company. When you are ready, create a hosted PostgreSQL database (for example Supabase or Neon), then change only this line in `.env`:
+
+```text
+DATABASE_URL=postgres://user:password@host:5432/database
+```
+
+Nothing is rebuilt. The database tables are created automatically the next time the server starts.
+
+## Importing the old data file
+
+If you have an old `backend/data/db.json`, it can be copied into PostgreSQL once. Stop the server first, then run:
+
+```bash
+cd backend
+npm run db:import -- ../backend/data/db.json
+```
+
+The import script rebuilds the audit chain and replaces any stored approval links with a scrambled hash. It refuses to run on a database that already has records unless you add `--force`.
+
+## Database tables
+
+The server creates and upgrades its own tables from the SQL files in `backend/migrations`. You do not run them by hand; starting the server does it.
 
 ## What is not ready yet
 
-Booth codes, reports, and live lists are not locked down. Anyone who knows a site address can currently read it. Work to close that is planned in later batches.
+- Real customer details should only be entered once you are using your own hosted database, with backups turned on.
+- `RETENTION_DAYS` is a setting only; nothing deletes old rows yet.
 
 ## Sample data
 

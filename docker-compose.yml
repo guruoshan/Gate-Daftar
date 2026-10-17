@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: gate
+      POSTGRES_PASSWORD: gate
+      POSTGRES_DB: gate_daftar
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U gate -d gate_daftar']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgres://gate:gate@db:5432/gate_daftar
+      # Change this to the real public address before going live.
+      PUBLIC_ORIGIN: http://localhost:5173
+      ALLOWED_ORIGINS: http://localhost:5173
+      DEMO_PIN: ''
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - '3001:3001'
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        API_PROXY_TARGET: http://api:3001
+    environment:
+      API_PROXY_TARGET: http://api:3001
+    depends_on:
+      - api
+    ports:
+      - '5173:5173'
+
+volumes:
+  pgdata:

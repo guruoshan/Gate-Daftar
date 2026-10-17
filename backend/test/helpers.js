@@ -5,9 +5,9 @@ import { resetStore } from '../src/store.js';
 import { resetRateLimits } from '../src/rateLimit.js';
 import { resetPinState } from '../src/pins.js';
 
-export function resetAll() {
-  resetStore();
-  resetSessions();
+export async function resetAll() {
+  await resetStore();
+  await resetSessions();
   resetRateLimits();
   resetPinState();
 }

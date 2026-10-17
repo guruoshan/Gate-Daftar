@@ -4,8 +4,8 @@ import { app } from '../src/index.js';
 import { createOwnedSite, resetAll } from './helpers.js';
 import { buildXlsx } from '../src/xlsx.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 describe('Fix 15: real xlsx export and safe cells', () => {

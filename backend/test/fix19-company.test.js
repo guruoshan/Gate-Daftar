@@ -4,8 +4,8 @@ import { app } from '../src/index.js';
 import { getDb, subscribe } from '../src/store.js';
 import { createOwnedSite, cookieFrom, resetAll } from './helpers.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 describe('Fix 19 and 20: company access is enforced and the dead channel is gone', () => {
@@ -28,18 +28,18 @@ describe('Fix 19 and 20: company access is enforced and the dead channel is gone
 
   it('does not emit a company wide channel', async () => {
     const { site, cookie } = await createOwnedSite();
-    const companyId = getDb().sites.find((s) => s.id === site.id).companyId;
+    const companyId = (await getDb()).sites.find((s) => s.id === site.id).companyId;
     let gotCompany = false;
-    const off = subscribe.__bus
-      ? subscribe.__bus.on(`co:${companyId}`, () => {
-          gotCompany = true;
-        })
-      : null;
+    const channel = `co:${companyId}`;
+    const handler = () => {
+      gotCompany = true;
+    };
+    if (subscribe.__bus) subscribe.__bus.on(channel, handler);
     await request(app)
       .post(`/api/sites/${site.slug}/visitors`)
       .set('Cookie', cookie)
       .send({ name: 'Ibrahim', phone: '966555000111', purpose: 'Drop' });
     expect(gotCompany).toBe(false);
-    if (off) off();
+    if (subscribe.__bus) subscribe.__bus.off(channel, handler);
   });
 });

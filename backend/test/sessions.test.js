@@ -3,8 +3,8 @@ import request from 'supertest';
 import { app } from '../src/index.js';
 import { createOwnedSite, cookieFrom, resetAll } from './helpers.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 describe('Sessions: owner login by one-time code', () => {

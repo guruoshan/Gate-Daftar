@@ -4,8 +4,8 @@ import request from 'supertest';
 import { app } from '../src/index.js';
 import { createOwnedSite, hasSecretKeys, resetAll } from './helpers.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 function readSse(server, path, cookie, ms = 400) {

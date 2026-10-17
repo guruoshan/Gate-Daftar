@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/index.js';
 import { getDb } from '../src/store.js';
+import { query } from '../src/db.js';
 import { createOwnedSite, resetAll } from './helpers.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 async function makeOutpass(cookie, slug) {
@@ -19,7 +20,7 @@ async function makeOutpass(cookie, slug) {
       managerPhone: '966500111222',
       expectedMinutes: 45,
     });
-  const stored = getDb().entries.find((e) => e.id === res.body.entry.id);
+  const stored = (await getDb()).entries.find((e) => e.id === res.body.entry.id);
   return { raw: res.body.entry.pageUrl.split('/').pop(), stored };
 }
 
@@ -53,7 +54,10 @@ describe('Magic tokens: hashed, expiring, single use, bound to the pass', () => 
   it('refuses an expired token', async () => {
     const { site, cookie } = await createOwnedSite();
     const { raw, stored } = await makeOutpass(cookie, site.slug);
-    stored.magicTokenExpiresAt = new Date(Date.now() - 1000).toISOString();
+    await query('UPDATE entries SET magic_token_expires_at = $1 WHERE id = $2', [
+      new Date(Date.now() - 1000).toISOString(),
+      stored.id,
+    ]);
     const res = await request(app).get(`/api/approve/${raw}`);
     expect(res.status).toBe(410);
     expect(res.body.error).toBe('token_expired');

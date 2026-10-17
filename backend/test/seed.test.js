@@ -2,14 +2,14 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { seedDemoIfEmpty, getDb } from '../src/store.js';
 import { resetAll } from './helpers.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 describe('demo seed', () => {
-  it('uses only fake example.com emails and no live owner emails', () => {
-    seedDemoIfEmpty();
-    const { sites, people } = getDb();
+  it('uses only fake example.com emails and no live owner emails', async () => {
+    await seedDemoIfEmpty();
+    const { sites, people } = await getDb();
     expect(sites.length).toBeGreaterThan(0);
     for (const site of sites) {
       if (site.ownerEmail) {

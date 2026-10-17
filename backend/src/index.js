@@ -1,15 +1,18 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
+  initStore,
   seedDemoIfEmpty,
   createSite,
   publicSite,
   publicGateView,
   getSite,
   getSiteBySlug,
+  getSiteByOwnerEmail,
   addPerson,
   listPeople,
   snapshot,
@@ -31,9 +34,9 @@ import {
   listAudit,
   safeEntry,
   resetGuardPin,
-  getDb,
 } from './store.js';
 import { buildXlsx } from './xlsx.js';
+import { healthCheck } from './db.js';
 import { COUNTRIES, countryOf, waNumber } from './countries.js';
 import {
   createSession,
@@ -48,6 +51,7 @@ import { verifyPin, isLocked, recordFailure, clearFailures, pinKey } from './pin
 import { rateLimit, acquireStream } from './rateLimit.js';
 import { sendLoginCode } from './mailer.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
 const PORT = Number(process.env.PORT || 3001);
 
@@ -89,12 +93,12 @@ app.use((req, res, next) => {
 app.use(cors({ origin: (origin, cb) => cb(null, originAllowed(origin)), credentials: true }));
 app.use(express.json({ limit: '200kb' }));
 
-const gateLimit = rateLimit({ name: 'gate', windowMs: 60 * 1000, max: 30, envMax: 'RATE_LIMIT_GATE_MAX' });
-const createLimit = rateLimit({ name: 'create', windowMs: 60 * 60 * 1000, max: 20, envMax: 'RATE_LIMIT_CREATE_MAX' });
-const unlockLimit = rateLimit({ name: 'unlock', windowMs: 15 * 60 * 1000, max: 30, envMax: 'RATE_LIMIT_UNLOCK_MAX' });
-const approveLimit = rateLimit({ name: 'approve', windowMs: 60 * 1000, max: 60 });
-const exportLimit = rateLimit({ name: 'export', windowMs: 60 * 60 * 1000, max: 40 });
-const ownerLimit = rateLimit({ name: 'owner', windowMs: 15 * 60 * 1000, max: 20 });
+export function originFrom(req) {
+  if (process.env.PUBLIC_ORIGIN) return process.env.PUBLIC_ORIGIN.replace(/\/+$/, '');
+  const proto = req?.protocol || 'http';
+  const host = req?.headers?.host || `localhost:${PORT}`;
+  return `${proto}://${host}`;
+}
 
 export function assertStartupConfig(env = process.env) {
   if (env.NODE_ENV === 'production' && !env.PUBLIC_ORIGIN) {
@@ -102,12 +106,14 @@ export function assertStartupConfig(env = process.env) {
   }
 }
 
-export function originFrom(req) {
-  if (process.env.PUBLIC_ORIGIN) return process.env.PUBLIC_ORIGIN.replace(/\/+$/, '');
-  const proto = req?.protocol || 'http';
-  const host = req?.headers?.host || `localhost:${PORT}`;
-  return `${proto}://${host}`;
-}
+export const api = express.Router();
+
+const gateLimit = rateLimit({ name: 'gate', windowMs: 60 * 1000, max: 30, envMax: 'RATE_LIMIT_GATE_MAX' });
+const createLimit = rateLimit({ name: 'create', windowMs: 60 * 60 * 1000, max: 20, envMax: 'RATE_LIMIT_CREATE_MAX' });
+const unlockLimit = rateLimit({ name: 'unlock', windowMs: 15 * 60 * 1000, max: 30, envMax: 'RATE_LIMIT_UNLOCK_MAX' });
+const approveLimit = rateLimit({ name: 'approve', windowMs: 60 * 1000, max: 60 });
+const exportLimit = rateLimit({ name: 'export', windowMs: 60 * 60 * 1000, max: 40 });
+const ownerLimit = rateLimit({ name: 'owner', windowMs: 15 * 60 * 1000, max: 20 });
 
 function clientMeta(req, session, extra = {}) {
   return {
@@ -186,8 +192,8 @@ function publicCreated(entry) {
   };
 }
 
-function siteOr404(req, res) {
-  const site = getSite(req.params.siteId) || getSiteBySlug(req.params.siteId);
+async function siteOr404(req, res) {
+  const site = (await getSite(req.params.siteId)) || (await getSiteBySlug(req.params.siteId));
   if (!site) {
     res.status(404).json({ error: 'site_not_found' });
     return null;
@@ -200,8 +206,8 @@ function fail(res, result) {
   return res.status(code).json(result);
 }
 
-function requireAuthed(req, res) {
-  const { owner, booth } = readSessions(req);
+async function requireAuthed(req, res) {
+  const { owner, booth } = await readSessions(req);
   if (!owner && !booth) {
     res.status(401).json({ error: 'auth_required' });
     return null;
@@ -209,15 +215,15 @@ function requireAuthed(req, res) {
   return { owner, booth };
 }
 
-function requireEntrySession(req, res, entryId, roles = ['booth', 'owner']) {
-  if (!requireAuthed(req, res)) return null;
-  const entry = getEntry(entryId);
+async function requireEntrySession(req, res, entryId, roles = ['booth', 'owner']) {
+  if (!(await requireAuthed(req, res))) return null;
+  const entry = await getEntry(entryId);
   if (!entry) {
     res.status(404).json({ error: 'not_found' });
     return null;
   }
-  const site = getSite(entry.siteId);
-  const session = requireSiteAccess(req, res, site, roles);
+  const site = await getSite(entry.siteId);
+  const session = await requireSiteAccess(req, res, site, roles);
   if (!session) return null;
   return { entry, site, session };
 }
@@ -228,21 +234,23 @@ function jsonEntry(res, result, extra = {}) {
   return res.json({ entry, ...extra });
 }
 
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, name: 'gate-daftar' });
+api.get('/health', async (_req, res) => {
+  const db = await healthCheck();
+  const ok = db.ok;
+  res.status(ok ? 200 : 503).json({ ok, name: 'gate-daftar', database: db });
 });
 
-app.get('/api/countries', (_req, res) => {
+api.get('/countries', (_req, res) => {
   res.json({ countries: COUNTRIES });
 });
 
-app.post('/api/sites', createLimit, (req, res) => {
+api.post('/sites', createLimit, async (req, res) => {
   const { name, ownerName, ownerEmail, lang, pack, countryIso } = req.body || {};
   if (!name || !String(name).trim()) {
     return res.status(400).json({ error: 'name_required' });
   }
-  const { site, pin } = createSite({ name, ownerName, ownerEmail, lang, pack, countryIso });
-  const session = createSession({
+  const { site, pin } = await createSite({ name, ownerName, ownerEmail, lang, pack, countryIso });
+  const session = await createSession({
     role: 'owner',
     siteId: site.id,
     companyId: site.companyId,
@@ -258,23 +266,23 @@ app.post('/api/sites', createLimit, (req, res) => {
   });
 });
 
-app.get('/api/sites/:siteId', (req, res) => {
-  const site = siteOr404(req, res);
+api.get('/sites/:siteId', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
   res.json({ site: publicSite(site), country: countryOf(site.countryIso) });
 });
 
-app.get('/api/sites/:siteId/public', (req, res) => {
-  const site = siteOr404(req, res);
+api.get('/sites/:siteId/public', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
   res.json(publicGateView(site));
 });
 
-app.post('/api/guard/unlock', unlockLimit, (req, res) => {
+api.post('/guard/unlock', unlockLimit, async (req, res) => {
   const { pin, slug } = req.body || {};
   const cleanSlug = String(slug || '').trim();
   if (!cleanSlug) return res.status(400).json({ error: 'slug_required' });
-  const site = getSiteBySlug(cleanSlug);
+  const site = await getSiteBySlug(cleanSlug);
   const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
   if (!site) return res.status(401).json({ error: 'bad_pin' });
   const key = pinKey(site.id, ip);
@@ -288,7 +296,7 @@ app.post('/api/guard/unlock', unlockLimit, (req, res) => {
     return res.status(401).json({ error: 'bad_pin' });
   }
   clearFailures(key);
-  const session = createSession({
+  const session = await createSession({
     role: 'booth',
     siteId: site.id,
     companyId: site.companyId,
@@ -298,21 +306,20 @@ app.post('/api/guard/unlock', unlockLimit, (req, res) => {
   res.json({ site: publicSite(site) });
 });
 
-app.post('/api/sites/:siteId/pin/reset', (req, res) => {
-  const site = siteOr404(req, res);
+api.post('/sites/:siteId/pin/reset', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
-  const session = requireSiteAccess(req, res, site, ['owner']);
+  const session = await requireSiteAccess(req, res, site, ['owner']);
   if (!session) return;
-  const result = resetGuardPin(site.id, clientMeta(req, session));
+  const result = await resetGuardPin(site.id, clientMeta(req, session));
   if (result.error) return fail(res, result);
   res.json({ pin: result.pin });
 });
 
-app.post('/api/owner/request-code', ownerLimit, (req, res) => {
+api.post('/owner/request-code', ownerLimit, async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   if (!email) return res.status(400).json({ error: 'email_required' });
-  const site = getDb()
-    .sites.find((s) => String(s.ownerEmail || '').trim().toLowerCase() === email);
+  const site = await getSiteByOwnerEmail(email);
   if (site) {
     const rec = createAuthCode(email);
     try {
@@ -327,14 +334,14 @@ app.post('/api/owner/request-code', ownerLimit, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/owner/verify', ownerLimit, (req, res) => {
+api.post('/owner/verify', ownerLimit, async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const code = String(req.body?.code || '').trim();
   if (!email || !code) return res.status(400).json({ error: 'email_and_code_required' });
   if (!consumeAuthCode(email, code)) return res.status(401).json({ error: 'bad_code' });
-  const site = getDb().sites.find((s) => String(s.ownerEmail || '').trim().toLowerCase() === email);
+  const site = await getSiteByOwnerEmail(email);
   if (!site) return res.status(401).json({ error: 'bad_code' });
-  const session = createSession({
+  const session = await createSession({
     role: 'owner',
     siteId: site.id,
     companyId: site.companyId,
@@ -344,21 +351,21 @@ app.post('/api/owner/verify', ownerLimit, (req, res) => {
   res.json({ ok: true, site: publicSite(site) });
 });
 
-app.get('/api/sites/:siteId/snapshot', (req, res) => {
-  const site = siteOr404(req, res);
+api.get('/sites/:siteId/snapshot', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
-  if (!requireSiteAccess(req, res, site, ['booth', 'owner'])) return;
-  const snap = snapshot(site.id);
+  if (!(await requireSiteAccess(req, res, site, ['booth', 'owner']))) return;
+  const snap = await snapshot(site.id);
   res.json({
     ...snap,
     country: countryOf(site.countryIso),
   });
 });
 
-app.get('/api/sites/:siteId/stream', (req, res) => {
-  const site = siteOr404(req, res);
+api.get('/sites/:siteId/stream', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
-  if (!requireSiteAccess(req, res, site, ['booth', 'owner'])) return;
+  if (!(await requireSiteAccess(req, res, site, ['booth', 'owner']))) return;
   const slot = acquireStream(site.id, req);
   if (!slot.ok) return res.status(429).json({ error: 'too_many_streams' });
   res.setHeader('Content-Type', 'text/event-stream');
@@ -386,33 +393,33 @@ app.get('/api/sites/:siteId/stream', (req, res) => {
   });
 });
 
-app.get('/api/sites/:siteId/people', (req, res) => {
-  const site = siteOr404(req, res);
+api.get('/sites/:siteId/people', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
-  if (!requireSiteAccess(req, res, site, ['booth', 'owner'])) return;
-  res.json({ people: listPeople(site.id) });
+  if (!(await requireSiteAccess(req, res, site, ['booth', 'owner']))) return;
+  res.json({ people: await listPeople(site.id) });
 });
 
-app.post('/api/sites/:siteId/people', (req, res) => {
-  const site = siteOr404(req, res);
+api.post('/sites/:siteId/people', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
-  const session = requireSiteAccess(req, res, site, ['booth', 'owner']);
+  const session = await requireSiteAccess(req, res, site, ['booth', 'owner']);
   if (!session) return;
   const { name, role, phone, managerPhone, employeeId } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
-  const result = addPerson(site.id, { name, role, phone, managerPhone, employeeId }, clientMeta(req, session));
+  const result = await addPerson(site.id, { name, role, phone, managerPhone, employeeId }, clientMeta(req, session));
   if (result.error) return fail(res, result);
   res.json(result);
 });
 
-app.post('/api/sites/:siteId/visitors', (req, res) => {
-  const site = siteOr404(req, res);
+api.post('/sites/:siteId/visitors', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
-  const session = requireSiteAccess(req, res, site, ['booth', 'owner']);
+  const session = await requireSiteAccess(req, res, site, ['booth', 'owner']);
   if (!session) return;
   const { name, phone, company, purpose, hostName, idNumber, cardNumber } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
-  const result = createVisitor(
+  const result = await createVisitor(
     {
       siteId: site.id,
       name,
@@ -430,16 +437,16 @@ app.post('/api/sites/:siteId/visitors', (req, res) => {
   res.status(200).json({ entry: safeEntry(result.entry, { managerPhone: true }) });
 });
 
-app.post('/api/sites/:siteId/outpass', (req, res) => {
-  const site = siteOr404(req, res);
+api.post('/sites/:siteId/outpass', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
-  const session = requireSiteAccess(req, res, site, ['booth', 'owner']);
+  const session = await requireSiteAccess(req, res, site, ['booth', 'owner']);
   if (!session) return;
   const { name, employeeId, reason, expectedMinutes, managerPhone, managerName, personId, phone, company } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
   if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'reason_required' });
   if (!managerName || !String(managerName).trim()) return res.status(400).json({ error: 'manager_required' });
-  const result = createOutPass(
+  const result = await createOutPass(
     {
       siteId: site.id,
       name,
@@ -460,12 +467,12 @@ app.post('/api/sites/:siteId/outpass', (req, res) => {
   res.json({ entry: shareableOutpass(req, result.entry, lang, result.magicToken) });
 });
 
-app.post('/api/sites/:siteId/gate/visitor', gateLimit, (req, res) => {
-  const site = siteOr404(req, res);
+api.post('/sites/:siteId/gate/visitor', gateLimit, async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
   const { name, phone, company, purpose, hostName, idNumber, cardNumber } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
-  const result = createVisitor(
+  const result = await createVisitor(
     {
       siteId: site.id,
       name,
@@ -483,14 +490,14 @@ app.post('/api/sites/:siteId/gate/visitor', gateLimit, (req, res) => {
   res.status(201).json({ entry: publicCreated(result.entry) });
 });
 
-app.post('/api/sites/:siteId/gate/outpass', gateLimit, (req, res) => {
-  const site = siteOr404(req, res);
+api.post('/sites/:siteId/gate/outpass', gateLimit, async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
   const { name, employeeId, reason, expectedMinutes, managerPhone, managerName, phone, company } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
   if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'reason_required' });
   if (!managerName || !String(managerName).trim()) return res.status(400).json({ error: 'manager_required' });
-  const result = createOutPass(
+  const result = await createOutPass(
     {
       siteId: site.id,
       name,
@@ -518,38 +525,38 @@ app.post('/api/sites/:siteId/gate/outpass', gateLimit, (req, res) => {
   });
 });
 
-app.get('/api/sites/:siteId/search', (req, res) => {
-  const site = siteOr404(req, res);
+api.get('/sites/:siteId/search', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
-  if (!requireSiteAccess(req, res, site, ['booth', 'owner'])) return;
+  if (!(await requireSiteAccess(req, res, site, ['booth', 'owner']))) return;
   res.json({
-    entries: searchEntries(site.id, req.query.q).map((e) => safeEntry(e, { managerPhone: true })),
+    entries: (await searchEntries(site.id, req.query.q)).map((e) => safeEntry(e, { managerPhone: true })),
   });
 });
 
-app.get('/api/sites/:siteId/dashboard', (req, res) => {
-  const site = siteOr404(req, res);
+api.get('/sites/:siteId/dashboard', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
-  if (!requireSiteAccess(req, res, site, ['owner'])) return;
+  if (!(await requireSiteAccess(req, res, site, ['owner']))) return;
   res.json({
     site: publicSite(site),
-    stats: dashboard(site.id),
-    audit: listAudit(site.id, 40),
+    stats: await dashboard(site.id),
+    audit: await listAudit(site.id, 40),
   });
 });
 
-app.get('/api/sites/:siteId/audit', (req, res) => {
-  const site = siteOr404(req, res);
+api.get('/sites/:siteId/audit', async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
-  if (!requireSiteAccess(req, res, site, ['owner'])) return;
-  res.json({ audit: listAudit(site.id, Number(req.query.limit) || 200) });
+  if (!(await requireSiteAccess(req, res, site, ['owner']))) return;
+  res.json({ audit: await listAudit(site.id, Number(req.query.limit) || 200) });
 });
 
-app.get('/api/sites/:siteId/export', exportLimit, (req, res) => {
-  const site = siteOr404(req, res);
+api.get('/sites/:siteId/export', exportLimit, async (req, res) => {
+  const site = await siteOr404(req, res);
   if (!site) return;
-  if (!requireSiteAccess(req, res, site, ['owner'])) return;
-  const rows = exportRows(site.id, {
+  if (!(await requireSiteAccess(req, res, site, ['owner']))) return;
+  const rows = await exportRows(site.id, {
     from: req.query.from,
     to: req.query.to,
     status: req.query.status,
@@ -597,34 +604,34 @@ app.get('/api/sites/:siteId/export', exportLimit, (req, res) => {
   res.json({ rows });
 });
 
-app.post('/api/entries/:id/admit', (req, res) => {
-  const found = requireEntrySession(req, res, req.params.id);
+api.post('/entries/:id/admit', async (req, res) => {
+  const found = await requireEntrySession(req, res, req.params.id);
   if (!found) return;
-  jsonEntry(res, admitVisitor(found.entry.id, clientMeta(req, found.session)));
+  jsonEntry(res, await admitVisitor(found.entry.id, clientMeta(req, found.session)));
 });
 
-app.post('/api/entries/:id/exit', (req, res) => {
-  const found = requireEntrySession(req, res, req.params.id);
+api.post('/entries/:id/exit', async (req, res) => {
+  const found = await requireEntrySession(req, res, req.params.id);
   if (!found) return;
-  jsonEntry(res, exitVisitor(found.entry.id, clientMeta(req, found.session)));
+  jsonEntry(res, await exitVisitor(found.entry.id, clientMeta(req, found.session)));
 });
 
-app.post('/api/entries/:id/out', (req, res) => {
-  const found = requireEntrySession(req, res, req.params.id);
+api.post('/entries/:id/out', async (req, res) => {
+  const found = await requireEntrySession(req, res, req.params.id);
   if (!found) return;
-  jsonEntry(res, logOut(found.entry.id, clientMeta(req, found.session)));
+  jsonEntry(res, await logOut(found.entry.id, clientMeta(req, found.session)));
 });
 
-app.post('/api/entries/:id/in', (req, res) => {
-  const found = requireEntrySession(req, res, req.params.id);
+api.post('/entries/:id/in', async (req, res) => {
+  const found = await requireEntrySession(req, res, req.params.id);
   if (!found) return;
-  jsonEntry(res, logIn(found.entry.id, clientMeta(req, found.session)));
+  jsonEntry(res, await logIn(found.entry.id, clientMeta(req, found.session)));
 });
 
-app.post('/api/entries/:id/unapproved', (req, res) => {
-  const found = requireEntrySession(req, res, req.params.id);
+api.post('/entries/:id/unapproved', async (req, res) => {
+  const found = await requireEntrySession(req, res, req.params.id);
   if (!found) return;
-  jsonEntry(res, unapprovedLeave(found.entry.id, req.body?.reason || '', clientMeta(req, found.session)));
+  jsonEntry(res, await unapprovedLeave(found.entry.id, req.body?.reason || '', clientMeta(req, found.session)));
 });
 
 function approveView(entry) {
@@ -644,21 +651,21 @@ function approveView(entry) {
   };
 }
 
-app.get('/api/approve/:token', (req, res) => {
-  const entry = getEntryByToken(req.params.token);
+api.get('/approve/:token', async (req, res) => {
+  const entry = await getEntryByToken(req.params.token);
   if (!entry) return res.status(404).json({ error: 'not_found' });
   if (isMagicTokenExpired(entry)) return res.status(410).json({ error: 'token_expired' });
-  const site = getSite(entry.siteId);
+  const site = await getSite(entry.siteId);
   res.json({
     entry: approveView(entry),
     site: publicSite(site),
   });
 });
 
-app.post('/api/approve/:token', approveLimit, (req, res) => {
+api.post('/approve/:token', approveLimit, async (req, res) => {
   const decision = req.body?.decision === 'deny' ? 'deny' : 'approve';
-  const entryPeek = getEntryByToken(req.params.token);
-  const result = decideOutPass(
+  const entryPeek = await getEntryByToken(req.params.token);
+  const result = await decideOutPass(
     req.params.token,
     decision,
     req.body?.denyReason || '',
@@ -670,8 +677,8 @@ app.post('/api/approve/:token', approveLimit, (req, res) => {
   res.json({ entry: approveView(result.entry) });
 });
 
-app.get('/api/entries/:id', (req, res) => {
-  const found = requireEntrySession(req, res, req.params.id, ['booth', 'owner']);
+api.get('/entries/:id', async (req, res) => {
+  const found = await requireEntrySession(req, res, req.params.id, ['booth', 'owner']);
   if (!found) return;
   res.json({
     entry: safeEntry(found.entry, { managerPhone: true }),
@@ -679,9 +686,23 @@ app.get('/api/entries/:id', (req, res) => {
   });
 });
 
-export function start() {
+app.use('/api', api);
+app.use('/api/v1', api);
+
+function readOpenApi() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '../openapi.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+app.get('/api/v1/openapi.json', (_req, res) => res.json(readOpenApi()));
+app.get('/api/openapi.json', (_req, res) => res.json(readOpenApi()));
+
+export async function start() {
   assertStartupConfig();
-  seedDemoIfEmpty();
+  await initStore({ seed: true });
   const server = app.listen(PORT, '0.0.0.0', () => {
     process.stdout.write(`gate-daftar api on ${PORT}\n`);
   });
@@ -697,3 +718,5 @@ const launchedDirectly =
 if (launchedDirectly) {
   start();
 }
+
+export { seedDemoIfEmpty };

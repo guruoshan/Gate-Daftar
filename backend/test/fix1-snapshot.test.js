@@ -3,8 +3,8 @@ import request from 'supertest';
 import { app } from '../src/index.js';
 import { createOwnedSite, unlockBooth, hasSecretKeys, resetAll } from './helpers.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 describe('Fix 1: snapshot is private; public gate is minimal', () => {

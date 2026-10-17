@@ -6,12 +6,15 @@
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "migrate": "node -e \"import('./src/db.js').then(async m=>{await m.runMigrations();console.log('migrations applied');await m.closePool()})\"",
+    "db:import": "node scripts/import-db-json.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.2",
-    "helmet": "^8.3.0"
+    "helmet": "^8.3.0",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "supertest": "^7.1.4",

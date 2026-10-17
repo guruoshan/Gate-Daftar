@@ -5,8 +5,8 @@ import { createOwnedSite, resetAll } from './helpers.js';
 
 const OLD = { ...process.env };
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 afterEach(() => {

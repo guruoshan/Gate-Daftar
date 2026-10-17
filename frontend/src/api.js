@@ -15,34 +15,34 @@ async function req(path, opts = {}) {
 }
 
 export const api = {
-  health: () => req('/api/health'),
-  createSite: (body) => req('/api/sites', { method: 'POST', body: JSON.stringify(body) }),
-  site: (id) => req(`/api/sites/${id}`),
-  publicSite: (id) => req(`/api/sites/${id}/public`),
-  snapshot: (id, lang) => req(`/api/sites/${id}/snapshot?lang=${lang || 'ar'}`),
-  unlock: (body) => req('/api/guard/unlock', { method: 'POST', body: JSON.stringify(body) }),
-  resetPin: (id) => req(`/api/sites/${id}/pin/reset`, { method: 'POST', body: '{}' }),
-  requestCode: (body) => req('/api/owner/request-code', { method: 'POST', body: JSON.stringify(body) }),
-  verifyCode: (body) => req('/api/owner/verify', { method: 'POST', body: JSON.stringify(body) }),
-  people: (id) => req(`/api/sites/${id}/people`),
-  addPerson: (id, body) => req(`/api/sites/${id}/people`, { method: 'POST', body: JSON.stringify(body) }),
-  visitor: (id, body) => req(`/api/sites/${id}/visitors`, { method: 'POST', body: JSON.stringify(body) }),
-  outpass: (id, body) => req(`/api/sites/${id}/outpass`, { method: 'POST', body: JSON.stringify(body) }),
-  gateVisitor: (id, body) => req(`/api/sites/${id}/gate/visitor`, { method: 'POST', body: JSON.stringify(body) }),
-  gateOutpass: (id, body) => req(`/api/sites/${id}/gate/outpass`, { method: 'POST', body: JSON.stringify(body) }),
-  search: (id, q) => req(`/api/sites/${id}/search?q=${encodeURIComponent(q || '')}`),
-  admit: (eid) => req(`/api/entries/${eid}/admit`, { method: 'POST', body: '{}' }),
-  exit: (eid) => req(`/api/entries/${eid}/exit`, { method: 'POST', body: '{}' }),
-  logOut: (eid) => req(`/api/entries/${eid}/out`, { method: 'POST', body: '{}' }),
-  logIn: (eid) => req(`/api/entries/${eid}/in`, { method: 'POST', body: '{}' }),
+  health: () => req('/api/v1/health'),
+  createSite: (body) => req('/api/v1/sites', { method: 'POST', body: JSON.stringify(body) }),
+  site: (id) => req(`/api/v1/sites/${id}`),
+  publicSite: (id) => req(`/api/v1/sites/${id}/public`),
+  snapshot: (id, lang) => req(`/api/v1/sites/${id}/snapshot?lang=${lang || 'ar'}`),
+  unlock: (body) => req('/api/v1/guard/unlock', { method: 'POST', body: JSON.stringify(body) }),
+  resetPin: (id) => req(`/api/v1/sites/${id}/pin/reset`, { method: 'POST', body: '{}' }),
+  requestCode: (body) => req('/api/v1/owner/request-code', { method: 'POST', body: JSON.stringify(body) }),
+  verifyCode: (body) => req('/api/v1/owner/verify', { method: 'POST', body: JSON.stringify(body) }),
+  people: (id) => req(`/api/v1/sites/${id}/people`),
+  addPerson: (id, body) => req(`/api/v1/sites/${id}/people`, { method: 'POST', body: JSON.stringify(body) }),
+  visitor: (id, body) => req(`/api/v1/sites/${id}/visitors`, { method: 'POST', body: JSON.stringify(body) }),
+  outpass: (id, body) => req(`/api/v1/sites/${id}/outpass`, { method: 'POST', body: JSON.stringify(body) }),
+  gateVisitor: (id, body) => req(`/api/v1/sites/${id}/gate/visitor`, { method: 'POST', body: JSON.stringify(body) }),
+  gateOutpass: (id, body) => req(`/api/v1/sites/${id}/gate/outpass`, { method: 'POST', body: JSON.stringify(body) }),
+  search: (id, q) => req(`/api/v1/sites/${id}/search?q=${encodeURIComponent(q || '')}`),
+  admit: (eid) => req(`/api/v1/entries/${eid}/admit`, { method: 'POST', body: '{}' }),
+  exit: (eid) => req(`/api/v1/entries/${eid}/exit`, { method: 'POST', body: '{}' }),
+  logOut: (eid) => req(`/api/v1/entries/${eid}/out`, { method: 'POST', body: '{}' }),
+  logIn: (eid) => req(`/api/v1/entries/${eid}/in`, { method: 'POST', body: '{}' }),
   unapproved: (eid, reason) =>
-    req(`/api/entries/${eid}/unapproved`, { method: 'POST', body: JSON.stringify({ reason }) }),
-  approveGet: (token) => req(`/api/approve/${token}`),
+    req(`/api/v1/entries/${eid}/unapproved`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  approveGet: (token) => req(`/api/v1/approve/${token}`),
   approvePost: (token, decision, denyReason) =>
-    req(`/api/approve/${token}`, { method: 'POST', body: JSON.stringify({ decision, denyReason }) }),
-  dashboard: (id) => req(`/api/sites/${id}/dashboard`),
-  audit: (id, limit = 200) => req(`/api/sites/${id}/audit?limit=${limit}`),
-  countries: () => req('/api/countries'),
+    req(`/api/v1/approve/${token}`, { method: 'POST', body: JSON.stringify({ decision, denyReason }) }),
+  dashboard: (id) => req(`/api/v1/sites/${id}/dashboard`),
+  audit: (id, limit = 200) => req(`/api/v1/sites/${id}/audit?limit=${limit}`),
+  countries: () => req('/api/v1/countries'),
 };
 
 export function exportUrl(siteId, format = 'csv', extra = {}) {
@@ -52,11 +52,11 @@ export function exportUrl(siteId, format = 'csv', extra = {}) {
   if (extra.status) q.set('status', extra.status);
   if (extra.from) q.set('from', extra.from);
   if (extra.to) q.set('to', extra.to);
-  return `/api/sites/${siteId}/export?${q.toString()}`;
+  return `/api/v1/sites/${siteId}/export?${q.toString()}`;
 }
 
 export function streamUrl(siteId, lang) {
-  return `/api/sites/${siteId}/stream?lang=${lang || 'ar'}`;
+  return `/api/v1/sites/${siteId}/stream?lang=${lang || 'ar'}`;
 }
 
 export function publicize(value) {

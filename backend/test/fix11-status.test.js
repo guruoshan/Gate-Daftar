@@ -4,8 +4,8 @@ import { app } from '../src/index.js';
 import { getDb } from '../src/store.js';
 import { createOwnedSite, resetAll } from './helpers.js';
 
-beforeEach(() => {
-  resetAll();
+beforeEach(async () => {
+  await resetAll();
 });
 
 async function visitor(slug, cookie) {
@@ -27,7 +27,7 @@ async function outpass(slug, cookie) {
       managerPhone: '966500111222',
       expectedMinutes: 45,
     });
-  const entry = getDb().entries.find((e) => e.id === res.body.entry.id);
+  const entry = (await getDb()).entries.find((e) => e.id === res.body.entry.id);
   return { ...entry, magicToken: res.body.entry.pageUrl.split('/').pop() };
 }
 

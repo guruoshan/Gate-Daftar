@@ -1,0 +1,94 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Gate Daftar API",
+    "version": "1.0.0",
+    "description": "Digital gate book. All routes are served under /api/v1 (and /api as an alias)."
+  },
+  "servers": [{ "url": "/api/v1" }],
+  "paths": {
+    "/health": {
+      "get": { "summary": "Service and database health", "responses": { "200": { "description": "Healthy" }, "503": { "description": "Database unreachable" } } }
+    },
+    "/countries": {
+      "get": { "summary": "Supported countries", "responses": { "200": { "description": "Country list" } } }
+    },
+    "/sites": {
+      "post": { "summary": "Create a site", "responses": { "200": { "description": "Created" } } }
+    },
+    "/sites/{siteId}": {
+      "get": { "summary": "Public site details", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Site" } } }
+    },
+    "/sites/{siteId}/public": {
+      "get": { "summary": "Minimal gate view", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Gate view" } } }
+    },
+    "/guard/unlock": {
+      "post": { "summary": "Unlock the booth with a PIN", "responses": { "200": { "description": "Unlocked" } } }
+    },
+    "/sites/{siteId}/pin/reset": {
+      "post": { "summary": "Reset the guard PIN", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "New PIN" } } }
+    },
+    "/owner/request-code": {
+      "post": { "summary": "Email an owner login code", "responses": { "200": { "description": "Sent" } } }
+    },
+    "/owner/verify": {
+      "post": { "summary": "Verify an owner login code", "responses": { "200": { "description": "Logged in" } } }
+    },
+    "/sites/{siteId}/snapshot": {
+      "get": { "summary": "Full site snapshot", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Snapshot" } } }
+    },
+    "/sites/{siteId}/stream": {
+      "get": { "summary": "Live change stream", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Event stream" } } }
+    },
+    "/sites/{siteId}/people": {
+      "get": { "summary": "List people", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "People" } } },
+      "post": { "summary": "Add a person", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Created" } } }
+    },
+    "/sites/{siteId}/visitors": {
+      "post": { "summary": "Record a visitor", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Created" } } }
+    },
+    "/sites/{siteId}/outpass": {
+      "post": { "summary": "Create an out-pass request", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Created" } } }
+    },
+    "/sites/{siteId}/gate/visitor": {
+      "post": { "summary": "Public visitor form", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "201": { "description": "Created" } } }
+    },
+    "/sites/{siteId}/gate/outpass": {
+      "post": { "summary": "Public out-pass form", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "201": { "description": "Created" } } }
+    },
+    "/sites/{siteId}/search": {
+      "get": { "summary": "Search entries", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Matches" } } }
+    },
+    "/sites/{siteId}/dashboard": {
+      "get": { "summary": "Owner dashboard", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Stats" } } }
+    },
+    "/sites/{siteId}/audit": {
+      "get": { "summary": "Audit log", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Audit rows" } } }
+    },
+    "/sites/{siteId}/export": {
+      "get": { "summary": "Export entries", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Export" } } }
+    },
+    "/entries/{id}/admit": {
+      "post": { "summary": "Admit a visitor", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Updated" } } }
+    },
+    "/entries/{id}/exit": {
+      "post": { "summary": "Exit a visitor", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Updated" } } }
+    },
+    "/entries/{id}/out": {
+      "post": { "summary": "Log an employee out", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Updated" } } }
+    },
+    "/entries/{id}/in": {
+      "post": { "summary": "Log an employee back in", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Updated" } } }
+    },
+    "/entries/{id}/unapproved": {
+      "post": { "summary": "Mark an unapproved leave", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Updated" } } }
+    },
+    "/approve/{token}": {
+      "get": { "summary": "Show a pending approval", "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Pending" }, "410": { "description": "Expired" } } },
+      "post": { "summary": "Approve or deny a request", "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Decided" }, "410": { "description": "Expired" } } }
+    },
+    "/entries/{id}": {
+      "get": { "summary": "Entry details", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Entry" } } }
+    }
+  }
+}
