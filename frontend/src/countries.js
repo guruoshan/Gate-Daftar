@@ -16,8 +16,12 @@ export function countryOf(iso) {
   return COUNTRIES.find((c) => c.iso === iso) || COUNTRIES[0];
 }
 
+import { digits as normalizeDigitString, normalizeArabicText } from './text.js';
+
+export { normalizeDigits, normalizeArabicText } from './text.js';
+
 export function onlyDigits(value) {
-  return String(value || '').replace(/\D/g, '');
+  return normalizeDigitString(value);
 }
 
 export function guessIso(value, fallback = 'SA') {
@@ -53,12 +57,12 @@ export function phoneOk(value, iso = 'SA') {
 }
 
 export function matchQuery(fields, q) {
-  const raw = String(q || '').trim().toLowerCase();
+  const raw = normalizeArabicText(q);
   if (!raw) return true;
-  let qd = onlyDigits(raw);
+  let qd = onlyDigits(q);
   if (qd.startsWith('00')) qd = qd.slice(2);
   if (qd.startsWith('0')) qd = qd.slice(1);
-  const text = fields.map((x) => String(x || '').toLowerCase()).join(' ');
+  const text = fields.map((x) => normalizeArabicText(x)).join(' ');
   if (text.includes(raw)) return true;
   if (qd.length >= 3) {
     const nums = fields.map((x) => onlyDigits(x)).join(' ');

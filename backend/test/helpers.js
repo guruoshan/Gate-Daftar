@@ -4,12 +4,14 @@ import { resetSessions } from '../src/sessions.js';
 import { resetStore } from '../src/store.js';
 import { resetRateLimits } from '../src/rateLimit.js';
 import { resetPinState } from '../src/pins.js';
+import { lastMail, resetMail } from '../src/mailer.js';
 
 export async function resetAll() {
   await resetStore();
   await resetSessions();
   resetRateLimits();
   resetPinState();
+  resetMail();
 }
 
 export function cookieFrom(res) {
@@ -42,5 +44,48 @@ export async function unlockBooth(slug, pin) {
 
 export function hasSecretKeys(value) {
   const text = JSON.stringify(value);
-  return /magicToken|guardPin/.test(text);
+  return /magicToken|guardPin|approveUrl|denyUrl|waLink|smsBody|ownerEmail|ownerName|managerEmail/.test(text);
+}
+
+export async function seedRoster(cookie, slug) {
+  const manager = await request(app)
+    .post(`/api/sites/${slug}/people`)
+    .set('Cookie', cookie)
+    .send({
+      name: 'Khalid Al-Harbi',
+      role: 'manager',
+      email: 'khalid@example.com',
+      phone: '966500111222',
+      employeeId: 'M-01',
+    });
+  const employee = await request(app)
+    .post(`/api/sites/${slug}/people`)
+    .set('Cookie', cookie)
+    .send({
+      name: 'Yousef Hassan',
+      role: 'employee',
+      phone: '966511222333',
+      employeeId: 'E-104',
+      managerId: manager.body.person.id,
+    });
+  return { manager: manager.body.person, employee: employee.body.person };
+}
+
+export async function createOutpass(cookie, slug, extra = {}) {
+  const roster = extra.roster || (await seedRoster(cookie, slug));
+  const res = await request(app)
+    .post(`/api/sites/${slug}/outpass`)
+    .set('Cookie', cookie)
+    .send({
+      personId: extra.personId || roster.employee.id,
+      managerId: extra.managerId || roster.manager.id,
+      reason: extra.reason || 'Lunch',
+      expectedMinutes: extra.expectedMinutes || 45,
+    });
+  return {
+    res,
+    roster,
+    entry: res.body.entry,
+    token: lastMail()?.token || '',
+  };
 }

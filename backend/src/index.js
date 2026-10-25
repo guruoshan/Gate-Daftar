@@ -14,7 +14,6 @@ import {
   getSiteBySlug,
   getSiteByOwnerEmail,
   addPerson,
-  listPeople,
   snapshot,
   createVisitor,
   createOutPass,
@@ -32,12 +31,24 @@ import {
   dashboard,
   exportRows,
   listAudit,
-  safeEntry,
+  listPeoplePublic,
+  listGateRoster,
+  listGuards,
+  redactEntry,
+  redactSite,
+  redactPerson,
+  redactAudit,
   resetGuardPin,
+  resetGuardPersonPin,
+  findGuardByPin,
+  rotateOutPassToken,
+  updateSiteTimezone,
 } from './store.js';
 import { buildXlsx } from './xlsx.js';
 import { healthCheck } from './db.js';
 import { COUNTRIES, countryOf, waNumber } from './countries.js';
+import { SITE_TIMEZONES } from './time.js';
+import { writePid } from './boot.js';
 import {
   createSession,
   setOwnerCookie,
@@ -49,7 +60,7 @@ import {
 } from './sessions.js';
 import { verifyPin, isLocked, recordFailure, clearFailures, pinKey } from './pins.js';
 import { rateLimit, acquireStream } from './rateLimit.js';
-import { sendLoginCode } from './mailer.js';
+import { sendLoginCode, sendApprovalEmail } from './mailer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
@@ -72,16 +83,24 @@ app.use(
 );
 
 function allowedOrigins() {
-  const list = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
+  const fallback = 'http://localhost:5173,http://127.0.0.1:5173';
+  const list = (process.env.ALLOWED_ORIGINS || fallback)
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  return list;
+  return list.filter((item) => item !== '*');
 }
 
 function originAllowed(origin) {
   if (!origin) return true;
-  return allowedOrigins().includes(origin);
+  if (allowedOrigins().includes(origin)) return true;
+  if (process.env.NODE_ENV === 'production') return false;
+  try {
+    const host = new URL(origin).hostname;
+    return host === 'monkeycode-ai.live' || host.endsWith('.monkeycode-ai.live');
+  } catch {
+    return false;
+  }
 }
 
 app.use((req, res, next) => {
@@ -101,8 +120,19 @@ export function originFrom(req) {
 }
 
 export function assertStartupConfig(env = process.env) {
-  if (env.NODE_ENV === 'production' && !env.PUBLIC_ORIGIN) {
-    throw new Error('PUBLIC_ORIGIN must be set in production');
+  if (env.NODE_ENV === 'production') {
+    if (!env.PUBLIC_ORIGIN) {
+      throw new Error('PUBLIC_ORIGIN must be set in production. This is the public web address people use in the browser.');
+    }
+    if (!env.ALLOWED_ORIGINS) {
+      throw new Error('ALLOWED_ORIGINS must be set in production. List the websites that may call this server, separated by commas.');
+    }
+    if (!env.SESSION_SECRET) {
+      throw new Error('SESSION_SECRET must be set in production. Use a long random phrase to protect login cookies.');
+    }
+    if (!env.SMTP_URL) {
+      throw new Error('SMTP_URL must be set in production. Manager approval is sent by company email.');
+    }
   }
 }
 
@@ -129,7 +159,7 @@ function clientMeta(req, session, extra = {}) {
 function approvalUrls(req, magicToken) {
   const origin = originFrom(req);
   const pageUrl = `${origin}/a/${magicToken}`;
-  return { approveUrl: pageUrl, denyUrl: pageUrl, pageUrl };
+  return { pageUrl };
 }
 
 function whatsappLink(phone, text) {
@@ -171,11 +201,31 @@ function outpassMessage(req, entry, lang = 'ar', magicToken = '') {
 function shareableOutpass(req, entry, lang, magicToken = '') {
   if (!entry) return entry;
   const urls = approvalUrls(req, magicToken);
+  const text = outpassMessage(req, entry, lang, magicToken);
   return {
-    ...safeEntry(entry, { managerPhone: true }),
-    ...urls,
-    waLink: whatsappLink(entry.managerPhone, outpassMessage(req, entry, lang, magicToken)),
-    smsBody: outpassMessage(req, entry, lang, magicToken),
+    ...redactEntry(entry),
+    pageUrl: urls.pageUrl,
+    smsBody: text,
+  };
+}
+
+function mailApproval(req, entry, magicToken, lang) {
+  const shared = shareableOutpass(req, entry, lang, magicToken);
+  sendApprovalEmail({
+    to: entry.managerEmail,
+    pageUrl: shared.pageUrl,
+    token: magicToken,
+    entry,
+    siteName: '',
+    lang,
+  });
+  return shared;
+}
+
+function waitingView(entry) {
+  return {
+    ...redactEntry(entry),
+    emailed: true,
   };
 }
 
@@ -202,8 +252,13 @@ async function siteOr404(req, res) {
 }
 
 function fail(res, result) {
-  const code = result.error === 'not_found' ? 404 : 400;
-  return res.status(code).json(result);
+  const code =
+    result.error === 'not_found' ? 404 : result.error === 'invalid_state' ? 409 : 400;
+  const body = { error: result.error };
+  if (result.entry) body.entry = redactEntry(result.entry);
+  if (result.entry?.status) body.status = result.entry.status;
+  if (result.expected) body.expected = result.expected;
+  return res.status(code).json(body);
 }
 
 async function requireAuthed(req, res) {
@@ -230,7 +285,7 @@ async function requireEntrySession(req, res, entryId, roles = ['booth', 'owner']
 
 function jsonEntry(res, result, extra = {}) {
   if (result.error) return fail(res, result);
-  const entry = safeEntry(result.entry, { managerPhone: true });
+  const entry = redactEntry(result.entry);
   return res.json({ entry, ...extra });
 }
 
@@ -241,15 +296,15 @@ api.get('/health', async (_req, res) => {
 });
 
 api.get('/countries', (_req, res) => {
-  res.json({ countries: COUNTRIES });
+  res.json({ countries: COUNTRIES, timezones: SITE_TIMEZONES });
 });
 
 api.post('/sites', createLimit, async (req, res) => {
-  const { name, ownerName, ownerEmail, lang, pack, countryIso } = req.body || {};
+  const { name, ownerName, ownerEmail, lang, pack, countryIso, timezone } = req.body || {};
   if (!name || !String(name).trim()) {
     return res.status(400).json({ error: 'name_required' });
   }
-  const { site, pin } = await createSite({ name, ownerName, ownerEmail, lang, pack, countryIso });
+  const { site, pin } = await createSite({ name, ownerName, ownerEmail, lang, pack, countryIso, timezone });
   const session = await createSession({
     role: 'owner',
     siteId: site.id,
@@ -275,11 +330,17 @@ api.get('/sites/:siteId', async (req, res) => {
 api.get('/sites/:siteId/public', async (req, res) => {
   const site = await siteOr404(req, res);
   if (!site) return;
-  res.json(publicGateView(site));
+  res.json(publicGateView(site, await listGateRoster(site.id)));
+});
+
+api.get('/sites/:siteId/guards', async (req, res) => {
+  const site = await siteOr404(req, res);
+  if (!site) return;
+  res.json({ guards: await listGuards(site.id) });
 });
 
 api.post('/guard/unlock', unlockLimit, async (req, res) => {
-  const { pin, slug } = req.body || {};
+  const { pin, slug, personId } = req.body || {};
   const cleanSlug = String(slug || '').trim();
   if (!cleanSlug) return res.status(400).json({ error: 'slug_required' });
   const site = await getSiteBySlug(cleanSlug);
@@ -291,7 +352,15 @@ api.post('/guard/unlock', unlockLimit, async (req, res) => {
     res.set('Retry-After', String(Math.ceil(lock.retryAfterMs / 1000)));
     return res.status(429).json({ error: 'locked_out', retryAfterMs: lock.retryAfterMs });
   }
-  if (!verifyPin(String(pin || ''), site.guardPinHash)) {
+  let actorName = 'Booth';
+  let actorPersonId = '';
+  const named = personId ? await findGuardByPin(site.id, pin) : null;
+  const namedMatch = named && (!personId || named.id === personId);
+  const sharedOk = verifyPin(String(pin || ''), site.guardPinHash);
+  if (namedMatch) {
+    actorName = named.name;
+    actorPersonId = named.id;
+  } else if (!sharedOk) {
     recordFailure(key);
     return res.status(401).json({ error: 'bad_pin' });
   }
@@ -300,10 +369,21 @@ api.post('/guard/unlock', unlockLimit, async (req, res) => {
     role: 'booth',
     siteId: site.id,
     companyId: site.companyId,
-    name: 'Booth',
+    name: actorName,
+    personId: actorPersonId,
   });
   setBoothCookie(res, session);
-  res.json({ site: publicSite(site) });
+  res.json({ site: publicSite(site), guard: actorPersonId ? { id: actorPersonId, name: actorName } : null });
+});
+
+api.post('/sites/:siteId/timezone', async (req, res) => {
+  const site = await siteOr404(req, res);
+  if (!site) return;
+  const session = await requireSiteAccess(req, res, site, ['owner']);
+  if (!session) return;
+  const result = await updateSiteTimezone(site.id, req.body?.timezone, clientMeta(req, session));
+  if (result.error) return fail(res, result);
+  res.json({ site: redactSite(publicSite(result.site)) });
 });
 
 api.post('/sites/:siteId/pin/reset', async (req, res) => {
@@ -397,7 +477,7 @@ api.get('/sites/:siteId/people', async (req, res) => {
   const site = await siteOr404(req, res);
   if (!site) return;
   if (!(await requireSiteAccess(req, res, site, ['booth', 'owner']))) return;
-  res.json({ people: await listPeople(site.id) });
+  res.json({ people: await listPeoplePublic(site.id) });
 });
 
 api.post('/sites/:siteId/people', async (req, res) => {
@@ -405,11 +485,17 @@ api.post('/sites/:siteId/people', async (req, res) => {
   if (!site) return;
   const session = await requireSiteAccess(req, res, site, ['booth', 'owner']);
   if (!session) return;
-  const { name, role, phone, managerPhone, employeeId } = req.body || {};
+  const { name, role, phone, email, managerPhone, managerId, employeeId } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
-  const result = await addPerson(site.id, { name, role, phone, managerPhone, employeeId }, clientMeta(req, session));
+  const result = await addPerson(
+    site.id,
+    { name, role, phone, email, managerPhone, managerId, employeeId },
+    clientMeta(req, session),
+  );
   if (result.error) return fail(res, result);
-  res.json(result);
+  const body = { person: redactPerson(result.person, { includeEmail: result.person.role === 'manager' }) };
+  if (result.pin) body.pin = result.pin;
+  res.json(body);
 });
 
 api.post('/sites/:siteId/visitors', async (req, res) => {
@@ -434,7 +520,7 @@ api.post('/sites/:siteId/visitors', async (req, res) => {
     clientMeta(req, session),
   );
   if (result.error) return fail(res, result);
-  res.status(200).json({ entry: safeEntry(result.entry, { managerPhone: true }) });
+  res.status(200).json({ entry: redactEntry(result.entry) });
 });
 
 api.post('/sites/:siteId/outpass', async (req, res) => {
@@ -442,29 +528,30 @@ api.post('/sites/:siteId/outpass', async (req, res) => {
   if (!site) return;
   const session = await requireSiteAccess(req, res, site, ['booth', 'owner']);
   if (!session) return;
-  const { name, employeeId, reason, expectedMinutes, managerPhone, managerName, personId, phone, company } = req.body || {};
-  if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
+  const { reason, expectedMinutes, personId, managerId, phone, company } = req.body || {};
+  if (!personId) return res.status(400).json({ error: 'person_required' });
   if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'reason_required' });
-  if (!managerName || !String(managerName).trim()) return res.status(400).json({ error: 'manager_required' });
   const result = await createOutPass(
     {
       siteId: site.id,
-      name,
       phone,
       company,
-      employeeId,
       reason,
       expectedMinutes,
-      managerPhone,
-      managerName,
       source: 'guard',
       personId,
+      managerId,
     },
     clientMeta(req, session),
   );
   if (result.error) return fail(res, result);
   const lang = req.body?.lang === 'en' ? 'en' : site.lang;
-  res.json({ entry: shareableOutpass(req, result.entry, lang, result.magicToken) });
+  try {
+    mailApproval(req, result.entry, result.magicToken, lang);
+  } catch {
+    return res.status(503).json({ error: 'mail_not_configured', entry: waitingView(result.entry) });
+  }
+  res.json({ entry: waitingView(result.entry) });
 });
 
 api.post('/sites/:siteId/gate/visitor', gateLimit, async (req, res) => {
@@ -493,44 +580,58 @@ api.post('/sites/:siteId/gate/visitor', gateLimit, async (req, res) => {
 api.post('/sites/:siteId/gate/outpass', gateLimit, async (req, res) => {
   const site = await siteOr404(req, res);
   if (!site) return;
-  const { name, employeeId, reason, expectedMinutes, managerPhone, managerName, phone, company } = req.body || {};
-  if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
+  const { reason, expectedMinutes, personId, managerId, phone, company } = req.body || {};
+  if (!personId) return res.status(400).json({ error: 'person_required' });
   if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'reason_required' });
-  if (!managerName || !String(managerName).trim()) return res.status(400).json({ error: 'manager_required' });
   const result = await createOutPass(
     {
       siteId: site.id,
-      name,
       phone,
       company,
-      employeeId,
       reason,
       expectedMinutes,
-      managerPhone,
-      managerName,
       source: 'qr',
+      personId,
+      managerId,
     },
-    clientMeta(req, null, { role: 'employee', name }),
+    clientMeta(req, null, { role: 'employee', name: '' }),
   );
   if (result.error) return fail(res, result);
   const lang = req.body?.lang === 'en' ? 'en' : site.lang;
-  const shared = shareableOutpass(req, result.entry, lang, result.magicToken);
-  res.status(201).json({
-    entry: {
-      ...publicCreated(result.entry),
-      pageUrl: shared.pageUrl,
-      waLink: shared.waLink,
-      smsBody: shared.smsBody,
-    },
-  });
+  try {
+    mailApproval(req, result.entry, result.magicToken, lang);
+  } catch {
+    return res.status(503).json({ error: 'mail_not_configured', entry: publicCreated(result.entry) });
+  }
+  res.status(201).json({ entry: publicCreated(result.entry) });
+});
+
+api.post('/entries/:id/resend', async (req, res) => {
+  const found = await requireEntrySession(req, res, req.params.id, ['booth', 'owner']);
+  if (!found) return;
+  const rotated = await rotateOutPassToken(found.entry.id);
+  if (rotated.error) return fail(res, rotated);
+  const lang = req.body?.lang === 'en' ? 'en' : found.site.lang;
+  try {
+    mailApproval(req, rotated.entry, rotated.magicToken, lang);
+  } catch {
+    return res.status(503).json({ error: 'mail_not_configured' });
+  }
+  res.json({ entry: waitingView(rotated.entry) });
 });
 
 api.get('/sites/:siteId/search', async (req, res) => {
   const site = await siteOr404(req, res);
   if (!site) return;
   if (!(await requireSiteAccess(req, res, site, ['booth', 'owner']))) return;
+  const found = await searchEntries(site.id, req.query.q, {
+    cursor: req.query.cursor,
+    limit: Number(req.query.limit) || 100,
+  });
   res.json({
-    entries: (await searchEntries(site.id, req.query.q)).map((e) => safeEntry(e, { managerPhone: true })),
+    entries: found.entries.map(redactEntry),
+    nextCursor: found.nextCursor,
+    total: found.total,
   });
 });
 
@@ -539,9 +640,9 @@ api.get('/sites/:siteId/dashboard', async (req, res) => {
   if (!site) return;
   if (!(await requireSiteAccess(req, res, site, ['owner']))) return;
   res.json({
-    site: publicSite(site),
-    stats: await dashboard(site.id),
-    audit: await listAudit(site.id, 40),
+    site: redactSite(publicSite(site)),
+    stats: await dashboard(site.id, req.query.day),
+    audit: (await listAudit(site.id, 40)).map(redactAudit),
   });
 });
 
@@ -549,7 +650,7 @@ api.get('/sites/:siteId/audit', async (req, res) => {
   const site = await siteOr404(req, res);
   if (!site) return;
   if (!(await requireSiteAccess(req, res, site, ['owner']))) return;
-  res.json({ audit: await listAudit(site.id, Number(req.query.limit) || 200) });
+  res.json({ audit: (await listAudit(site.id, Number(req.query.limit) || 200)).map(redactAudit) });
 });
 
 api.get('/sites/:siteId/export', exportLimit, async (req, res) => {
@@ -561,6 +662,7 @@ api.get('/sites/:siteId/export', exportLimit, async (req, res) => {
     to: req.query.to,
     status: req.query.status,
     kind: req.query.kind,
+    day: req.query.day,
   });
   const headers = [
     'id',
@@ -584,15 +686,19 @@ api.get('/sites/:siteId/export', exportLimit, async (req, res) => {
     'inAt',
     'dueAt',
   ];
-  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const body = [headers.join(','), ...rows.map((r) => headers.map((h) => esc(r[h])).join(','))].join('\n');
+  const csvCell = (v) => {
+    let text = String(v ?? '');
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+    return `"${text.replace(/"/g, '""')}"`;
+  };
+  const body = [headers.join(','), ...rows.map((r) => headers.map((h) => csvCell(r[h])).join(','))].join('\n');
   const fmt = String(req.query.format || 'json').toLowerCase();
-  if (fmt === 'csv') {
+  if (fmt === 'csv' || fmt === 'xls') {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="gate-daftar-${site.slug}.csv"`);
     return res.send(`\uFEFF${body}`);
   }
-  if (fmt === 'xls' || fmt === 'xlsx' || fmt === 'excel') {
+  if (fmt === 'xlsx' || fmt === 'excel') {
     const workbook = buildXlsx(rows, headers);
     res.setHeader(
       'Content-Type',
@@ -671,9 +777,9 @@ api.post('/approve/:token', approveLimit, async (req, res) => {
     req.body?.denyReason || '',
     clientMeta(req, null, { role: 'manager', name: entryPeek?.managerName || 'Manager' }),
   );
-  if (result.error === 'not_found') return res.status(404).json(result);
-  if (result.error === 'token_expired') return res.status(410).json(result);
-  if (result.error) return res.status(400).json(result);
+  if (result.error === 'not_found') return res.status(404).json({ error: result.error });
+  if (result.error === 'token_expired') return res.status(410).json({ error: result.error });
+  if (result.error) return fail(res, result);
   res.json({ entry: approveView(result.entry) });
 });
 
@@ -681,8 +787,8 @@ api.get('/entries/:id', async (req, res) => {
   const found = await requireEntrySession(req, res, req.params.id, ['booth', 'owner']);
   if (!found) return;
   res.json({
-    entry: safeEntry(found.entry, { managerPhone: true }),
-    site: publicSite(found.site),
+    entry: redactEntry(found.entry),
+    site: redactSite(publicSite(found.site)),
   });
 });
 
@@ -703,6 +809,7 @@ app.get('/api/openapi.json', (_req, res) => res.json(readOpenApi()));
 export async function start() {
   assertStartupConfig();
   await initStore({ seed: true });
+  writePid();
   const server = app.listen(PORT, '0.0.0.0', () => {
     process.stdout.write(`gate-daftar api on ${PORT}\n`);
   });

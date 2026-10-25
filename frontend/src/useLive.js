@@ -70,12 +70,14 @@ export function insideList(entries) {
   return entries.filter((e) => e.status === 'inside');
 }
 
-export function fmtTime(iso, lang) {
+export function fmtTime(iso, lang, timeZone) {
   if (!iso) return '';
   try {
     return new Date(iso).toLocaleTimeString(lang === 'en' ? 'en-GB' : 'ar-SA', {
+      timeZone: timeZone || 'Asia/Riyadh',
       hour: '2-digit',
       minute: '2-digit',
+      hourCycle: 'h23',
     });
   } catch {
     return iso.slice(11, 16);

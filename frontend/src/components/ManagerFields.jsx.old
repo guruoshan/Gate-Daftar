@@ -30,13 +30,13 @@ export default function ManagerFields({ t, lang, o, setO, managers, pickMgr, iso
           <label htmlFor="om">{t.selectManager}</label>
           <select
             id="om"
-            value={managers.find((m) => m.phone === o.managerPhone)?.id || ''}
+            value={managers.find((m) => m.name === o.managerName)?.id || ''}
             onChange={(e) => pickMgr(e.target.value)}
           >
             <option value="">{t.selectManager}</option>
             {managers.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.name} · {m.phone}
+                {m.name}
               </option>
             ))}
           </select>

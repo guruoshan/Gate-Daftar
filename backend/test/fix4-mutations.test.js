@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/index.js';
 import { getDb } from '../src/store.js';
-import { createOwnedSite, unlockBooth, hasSecretKeys, resetAll } from './helpers.js';
+import { createOwnedSite, seedRoster, unlockBooth, hasSecretKeys, resetAll } from './helpers.js';
 
 beforeEach(async () => {
   await resetAll();
@@ -71,19 +71,19 @@ describe('Fix 4: mutations need a session; public gate is write-only', () => {
   });
 
   it('public gate writes an out-pass request and does not list the roster', async () => {
-    const { site } = await createOwnedSite();
+    const { site, cookie } = await createOwnedSite();
+    const roster = await seedRoster(cookie, site.slug);
     const res = await request(app).post(`/api/sites/${site.slug}/gate/outpass`).send({
-      name: 'Yousef Hassan',
-      employeeId: 'E-104',
+      personId: roster.employee.id,
+      managerId: roster.manager.id,
       reason: 'Bank errand',
       expectedMinutes: 90,
-      managerName: 'Khalid Al-Harbi',
-      managerPhone: '966500111222',
     });
     expect(res.status).toBe(201);
     expect(res.body.entry.dayToken).toBeTruthy();
     expect(res.body.entry.status).toBe('waiting_approval');
     expect(res.body.entry.magicToken).toBeUndefined();
+    expect(res.body.entry.pageUrl).toBeUndefined();
     expect(res.body.people).toBeUndefined();
     expect((await getDb()).entries.some((e) => e.kind === 'outpass')).toBe(true);
   });

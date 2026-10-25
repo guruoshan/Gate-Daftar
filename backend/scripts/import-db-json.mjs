@@ -13,6 +13,7 @@ import { hashPin } from '../src/pins.js';
 import { hashToken } from '../src/tokens.js';
 import { coercePack } from '../src/packs.js';
 import { auditBase, hashAudit } from '../src/audit.js';
+import { timezoneForCountry } from '../src/time.js';
 import { query, withTransaction, runMigrations, closePool } from '../src/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -99,6 +100,7 @@ async function main() {
         ownerEmail: s.ownerEmail || '',
         lang: s.lang === 'en' ? 'en' : 'ar',
         countryIso: s.countryIso || 'SA',
+        timezone: s.timezone || timezoneForCountry(s.countryIso || 'SA'),
         guardPinHash: s.guardPinHash || (s.guardPin ? hashPin(s.guardPin) : ''),
         createdAt: ts(s.createdAt) || new Date().toISOString(),
         updatedAt: ts(s.updatedAt),
@@ -190,9 +192,12 @@ async function main() {
         createdAt: ts(ev.at || ev.createdAt) || new Date().toISOString(),
       });
     }
-    // Rebuild the audit chain with the canonical hash so verifyAudit passes.
-    let prev = 'genesis';
+    const lastBySite = new Map();
+    const seqBySite = new Map();
     for (const a of audit) {
+      const siteKey = a.siteId || '';
+      const prev = lastBySite.get(siteKey) || 'genesis';
+      const siteSeq = (seqBySite.get(siteKey) || 0) + 1;
       const base = auditBase({
         id: a.id,
         at: ts(a.at || a.createdAt) || new Date().toISOString(),
@@ -224,8 +229,11 @@ async function main() {
         prevHash: base.prev,
         hash,
         createdAt: base.at,
+        siteSeq,
+        legacy: false,
       });
-      prev = hash;
+      lastBySite.set(siteKey, hash);
+      seqBySite.set(siteKey, siteSeq);
     }
   });
 

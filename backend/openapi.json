@@ -25,8 +25,14 @@
     "/guard/unlock": {
       "post": { "summary": "Unlock the booth with a PIN", "responses": { "200": { "description": "Unlocked" } } }
     },
+    "/sites/{siteId}/guards": {
+      "get": { "summary": "Named guards for the PIN pad", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Guards" } } }
+    },
     "/sites/{siteId}/pin/reset": {
       "post": { "summary": "Reset the guard PIN", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "New PIN" } } }
+    },
+    "/sites/{siteId}/timezone": {
+      "post": { "summary": "Set the site timezone", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Updated" } } }
     },
     "/owner/request-code": {
       "post": { "summary": "Email an owner login code", "responses": { "200": { "description": "Sent" } } }
@@ -82,6 +88,9 @@
     },
     "/entries/{id}/unapproved": {
       "post": { "summary": "Mark an unapproved leave", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Updated" } } }
+    },
+    "/entries/{id}/resend": {
+      "post": { "summary": "Resend the manager approval email", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Sent" } } }
     },
     "/approve/{token}": {
       "get": { "summary": "Show a pending approval", "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Pending" }, "410": { "description": "Expired" } } },

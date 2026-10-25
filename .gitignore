@@ -6,6 +6,7 @@ build/
 !.env.example
 backend/data/db.json
 backend/data/*.json
+backend/data/*.pid
 !backend/data/.gitkeep
 *.sqlite
 *.sqlite3
@@ -15,6 +16,7 @@ postgres-data/
 pgdata/
 .DS_Store
 *.log
+backups/
 coverage/
 playwright-report/
 test-results/

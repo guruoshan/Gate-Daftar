@@ -1,20 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, exportUrl } from '../api.js';
-
-function fmtWhen(iso, lang) {
-  if (!iso) return '';
-  try {
-    return new Date(iso).toLocaleString(lang === 'en' ? 'en-GB' : 'ar-SA', {
-      day: '2-digit',
-      month: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return String(iso).slice(0, 16);
-  }
-}
+import { formatInZone, todayLocalDate } from '../time.js';
 
 export default function Dashboard({ t, lang }) {
   const { siteId } = useParams();
@@ -22,24 +9,29 @@ export default function Dashboard({ t, lang }) {
   const [err, setErr] = useState('');
   const [kind, setKind] = useState('');
   const [status, setStatus] = useState('');
+  const [day, setDay] = useState('');
 
   useEffect(() => {
     let stop = false;
-    api.dashboard(siteId)
+    api.dashboard(siteId, day)
       .then((d) => {
-        if (!stop) setData(d);
+        if (!stop) {
+          setData(d);
+          if (!day && d.stats?.day) setDay(d.stats.day);
+        }
       })
       .catch(() => setErr('fail'));
     return () => {
       stop = true;
     };
-  }, [siteId]);
+  }, [siteId, day]);
 
   const stats = data?.stats || {};
   const site = data?.site;
   const audit = data?.audit || [];
   const slug = site?.slug || siteId;
-  const qs = { kind, status };
+  const tz = site?.timezone || stats.timezone || 'Asia/Riyadh';
+  const qs = { kind, status, day: day || stats.day };
 
   function download(format) {
     window.location.href = exportUrl(slug, format, qs);
@@ -93,6 +85,15 @@ export default function Dashboard({ t, lang }) {
         <h2>{t.download}</h2>
         <div className="grid-2">
           <div>
+            <label htmlFor="fd">{t.pickDay}</label>
+            <input
+              id="fd"
+              type="date"
+              value={day || stats.day || todayLocalDate(tz)}
+              onChange={(e) => setDay(e.target.value)}
+            />
+          </div>
+          <div>
             <label htmlFor="fk">{t.filterKind}</label>
             <select id="fk" value={kind} onChange={(e) => setKind(e.target.value)}>
               <option value="">{t.all}</option>
@@ -121,7 +122,7 @@ export default function Dashboard({ t, lang }) {
             {t.exportCsv}
           </button>
           <button type="button" className="ghost" onClick={() => download('xls')}>
-            {t.exportExcel}
+            {t.exportCsvExcel}
           </button>
           <Link className="ghost" to={`/setup/${slug}`} style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
             {t.createSite}
@@ -144,7 +145,7 @@ export default function Dashboard({ t, lang }) {
                     {row.ip ? ` · ${row.ip}` : ''}
                   </div>
                 </div>
-                <span className="badge b-in">{fmtWhen(row.at, lang)}</span>
+                 <span className="badge b-in">{formatInZone(row.at, tz, lang)}</span>
               </div>
             </article>
           ))}

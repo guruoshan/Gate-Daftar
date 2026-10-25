@@ -2,10 +2,13 @@ import crypto from 'crypto';
 import { EventEmitter } from 'events';
 import { id, shortCode, now } from './ids.js';
 import { countryOf, normalizePhone, digits } from './countries.js';
-import { hashPin, generatePin } from './pins.js';
+import { normalizeArabicText } from './text.js';
+import { timezoneForCountry, isValidTimeZone, dayBounds, todayLocalDate } from './time.js';
+import { hashPin, generatePin, verifyPin } from './pins.js';
 import { PACKS, coercePack } from './packs.js';
 import { newMagicToken, hashToken, tokenExpiry } from './tokens.js';
 import { auditBase, hashAudit } from './audit.js';
+import { domainsFromOwner, emailAllowed } from './emails.js';
 import {
   query,
   withTransaction,
@@ -14,6 +17,7 @@ import {
   publishDelta,
   startListener,
 } from './db.js';
+import { importLegacyIfEmpty } from './boot.js';
 
 const bus = new EventEmitter();
 bus.setMaxListeners(400);
@@ -38,18 +42,63 @@ function camelize(row) {
   return out;
 }
 
-export function safeEntry(entry, { managerPhone = false } = {}) {
-  if (!entry) return null;
-  const out = { ...entry };
-  delete out.magicToken;
-  delete out.magicTokenHash;
-  delete out.magicTokenExpiresAt;
-  delete out.magicTokenUsedAt;
-  if (!managerPhone) delete out.managerPhone;
+const HIDDEN_KEYS = [
+  'guardPin',
+  'guardPinHash',
+  'magicToken',
+  'magicTokenHash',
+  'magicTokenExpiresAt',
+  'magicTokenUsedAt',
+  'approveUrl',
+  'denyUrl',
+  'pageUrl',
+  'waLink',
+  'smsBody',
+  'managerPhone',
+  'managerEmail',
+  'ownerEmail',
+  'ownerName',
+  'pinHash',
+  'email',
+];
+
+function withoutHidden(value) {
+  if (!value) return value;
+  const out = { ...value };
+  for (const key of HIDDEN_KEYS) delete out[key];
   return out;
 }
 
-export function publicGateView(site) {
+export function redactEntry(entry) {
+  return withoutHidden(entry);
+}
+
+export function redactSite(site) {
+  return withoutHidden(site);
+}
+
+export function redactPerson(person, extra = {}) {
+  if (!person) return person;
+  const out = {
+    id: person.id,
+    name: person.name,
+    role: person.role,
+    employeeId: person.employeeId || '',
+    managerId: person.managerId || '',
+  };
+  if (extra.includeEmail && person.email) out.email = person.email;
+  return out;
+}
+
+export function redactAudit(row) {
+  return withoutHidden(row);
+}
+
+export function safeEntry(entry) {
+  return redactEntry(entry);
+}
+
+export function publicGateView(site, roster = { employees: [], managers: [] }) {
   if (!site) return null;
   return {
     site: {
@@ -61,6 +110,8 @@ export function publicGateView(site) {
     },
     country: countryOf(site.countryIso),
     options: { durations: [45, 60, 90, 180] },
+    employees: roster.employees || [],
+    managers: roster.managers || [],
   };
 }
 
@@ -73,6 +124,7 @@ export function publicSite(site) {
     pack: site.pack,
     lang: site.lang,
     countryIso: site.countryIso || 'SA',
+    timezone: site.timezone || timezoneForCountry(site.countryIso),
     companyId: site.companyId,
     createdAt: site.createdAt,
   };
@@ -87,6 +139,7 @@ function mapSite(row) {
   if (!row) return null;
   const s = camelize(row);
   if (!s.countryIso) s.countryIso = 'SA';
+  s.timezone = s.timezone || timezoneForCountry(s.countryIso);
   s.pack = coercePack(s.pack);
   return s;
 }
@@ -117,14 +170,17 @@ async function writeAudit({ siteId, action, actor, entryId, reason, ip, device }
     const site = siteId
       ? (await client.query('SELECT company_id FROM sites WHERE id = $1', [siteId])).rows[0]
       : null;
+    const siteKey = siteId || '';
     const prevRow = await client.query(
-      'SELECT hash FROM audit_events ORDER BY seq DESC LIMIT 1',
+      'SELECT hash, site_seq FROM audit_events WHERE COALESCE(site_id, \'\') = $1 ORDER BY site_seq DESC NULLS LAST, seq DESC LIMIT 1',
+      [siteKey],
     );
     const prev = prevRow.rows[0]?.hash || 'genesis';
+    const siteSeq = Number(prevRow.rows[0]?.site_seq || 0) + 1;
     const row = {
       id: id('aud_'),
       at: now(),
-      siteId: siteId || '',
+      siteId: siteKey,
       companyId: site?.company_id || '',
       action,
       actorRole: actor?.role || 'system',
@@ -139,8 +195,8 @@ async function writeAudit({ siteId, action, actor, entryId, reason, ip, device }
     row.hash = hashAudit(auditBase(row));
     await client.query(
       `INSERT INTO audit_events
-         (id, site_id, company_id, action, actor_role, actor_name, actor_hint, entry_id, reason, ip, device, prev_hash, hash, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+         (id, site_id, company_id, action, actor_role, actor_name, actor_hint, entry_id, reason, ip, device, prev_hash, hash, created_at, site_seq, legacy)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,false)`,
       [
         row.id,
         row.siteId,
@@ -156,6 +212,7 @@ async function writeAudit({ siteId, action, actor, entryId, reason, ip, device }
         row.prev,
         row.hash,
         row.at,
+        siteSeq,
       ],
     );
     return row;
@@ -163,21 +220,37 @@ async function writeAudit({ siteId, action, actor, entryId, reason, ip, device }
 }
 
 export async function verifyAudit() {
-  const rows = (await query('SELECT * FROM audit_events ORDER BY seq ASC')).rows.map(mapAudit);
-  let prev = 'genesis';
+  const rows = (await query(
+    'SELECT * FROM audit_events ORDER BY COALESCE(site_id, \'\'), site_seq ASC NULLS FIRST, seq ASC',
+  )).rows.map(mapAudit);
+  const lastBySite = new Map();
+  let checked = 0;
   for (const row of rows) {
+    const siteKey = row.siteId || '';
+    const prev = lastBySite.get(siteKey) || 'genesis';
     const base = auditBase(row);
+    if (row.legacy) {
+      lastBySite.set(siteKey, row.hash);
+      continue;
+    }
     if (base.prev !== prev) return { ok: false, at: row.id, reason: 'prev_mismatch' };
     if (hashAudit(base) !== row.hash) return { ok: false, at: row.id, reason: 'hash_mismatch' };
-    prev = row.hash;
+    lastBySite.set(siteKey, row.hash);
+    checked += 1;
   }
-  return { ok: true, count: rows.length };
+  return { ok: true, count: checked };
 }
 
 async function note(siteId, kind, message, extra, actor, ip, device) {
   await query(
     'INSERT INTO events (id, site_id, kind, message, extra, created_at) VALUES ($1,$2,$3,$4,$5,$6)',
     [id('ev_'), siteId, kind, message, extra ? JSON.stringify(extra) : null, now()],
+  );
+  await query(
+    `DELETE FROM events WHERE site_id = $1 AND id IN (
+       SELECT id FROM events WHERE site_id = $1 ORDER BY created_at DESC OFFSET 500
+     )`,
+    [siteId],
   );
   await writeAudit({
     siteId,
@@ -202,7 +275,7 @@ function emitEntry(entry) {
   emitSite(entry.siteId, 'delta', {
     entity: 'entry',
     op: 'upsert',
-    entry: safeEntry(entry, { managerPhone: false }),
+    entry: redactEntry(entry),
   });
 }
 
@@ -210,22 +283,32 @@ async function emitPeople(siteId) {
   emitSite(siteId, 'delta', {
     entity: 'people',
     op: 'replace',
-    people: await listPeople(siteId),
+    people: (await listPeople(siteId)).map(redactPerson),
   });
 }
 
 let listenerReady = false;
 
+async function attachListener() {
+  await startListener((msg) => {
+    if (!msg || msg.serverId === SERVER_ID) return;
+    bus.emit(`site:${msg.siteId}`, { type: msg.type, payload: msg.payload, at: now() });
+  });
+  listenerReady = true;
+}
+
 export async function initStore({ seed = false } = {}) {
   await runMigrations();
-  if (!listenerReady) {
-    await startListener((msg) => {
-      if (!msg || msg.serverId === SERVER_ID) return;
-      bus.emit(`site:${msg.siteId}`, { type: msg.type, payload: msg.payload, at: now() });
-    });
-    listenerReady = true;
+  if (!listenerReady) await attachListener();
+  if (seed) {
+    await importLegacyIfEmpty();
+    await seedDemoIfEmpty();
   }
-  if (seed) await seedDemoIfEmpty();
+}
+
+export async function restartListener() {
+  listenerReady = false;
+  await attachListener();
 }
 
 export function subscribe(siteId, fn) {
@@ -261,6 +344,12 @@ export async function getSiteByOwnerEmail(email) {
   return mapSite(rows[0]);
 }
 
+export async function getCompany(companyId) {
+  if (!companyId) return null;
+  const { rows } = await query('SELECT * FROM companies WHERE id = $1', [companyId]);
+  return rows[0] ? camelize(rows[0]) : null;
+}
+
 export async function listPeople(siteId) {
   const { rows } = await query(
     'SELECT * FROM people WHERE site_id = $1 AND active IS NOT FALSE ORDER BY created_at ASC',
@@ -269,12 +358,56 @@ export async function listPeople(siteId) {
   return rows.map(camelize);
 }
 
+export async function getPerson(personId) {
+  if (!personId) return null;
+  const { rows } = await query('SELECT * FROM people WHERE id = $1', [personId]);
+  return rows[0] ? camelize(rows[0]) : null;
+}
+
+export async function listPeoplePublic(siteId) {
+  return (await listPeople(siteId)).map((p) => redactPerson(p));
+}
+
+export async function listGateRoster(siteId) {
+  const people = await listPeople(siteId);
+  return {
+    employees: people.filter((p) => p.role !== 'manager' && p.role !== 'guard').map((p) => redactPerson(p)),
+    managers: people.filter((p) => p.role === 'manager').map((p) => redactPerson(p)),
+  };
+}
+
+export async function listGuards(siteId) {
+  return (await listPeople(siteId))
+    .filter((p) => p.role === 'guard')
+    .map((p) => ({ id: p.id, name: p.name, employeeId: p.employeeId || '' }));
+}
+
+const OPEN_STATUSES = ['waiting_admit', 'waiting_approval', 'approved_out', 'inside', 'out'];
+
 export async function listEntries(siteId) {
   const { rows } = await query(
     'SELECT * FROM entries WHERE site_id = $1 ORDER BY created_at DESC',
     [siteId],
   );
   return rows.map(mapEntry);
+}
+
+export async function listLiveEntries(siteId, timezone) {
+  const site = timezone ? { timezone } : await getSite(siteId);
+  const tz = site?.timezone || timezoneForCountry(site?.countryIso);
+  const today = todayLocalDate(tz);
+  const { start, end } = dayBounds(today, tz);
+  const { rows } = await query(
+    `SELECT * FROM entries
+      WHERE site_id = $1
+        AND (status = ANY($2) OR created_at >= $3::timestamptz)
+      ORDER BY created_at DESC`,
+    [siteId, OPEN_STATUSES, start],
+  );
+  return rows.map(mapEntry).filter((e) => {
+    if (OPEN_STATUSES.includes(e.status)) return true;
+    return e.createdAt >= start && e.createdAt < end;
+  });
 }
 
 export async function getEntry(entryId) {
@@ -327,8 +460,11 @@ const personKeys = [
   'name',
   'role',
   'phone',
+  'email',
   'managerPhone',
+  'managerId',
   'employeeId',
+  'pinHash',
   'active',
   'createdAt',
 ];
@@ -364,6 +500,8 @@ const entryKeys = [
   'expectedMinutes',
   'managerName',
   'managerPhone',
+  'managerEmail',
+  'managerId',
   'source',
   'dayToken',
   'magicTokenHash',
@@ -404,11 +542,12 @@ async function uniqueDayToken(siteId) {
   return shortCode(5);
 }
 
-export async function createSite({ name, ownerName, ownerEmail, lang = 'ar', pack, countryIso = 'SA' }) {
+export async function createSite({ name, ownerName, ownerEmail, lang = 'ar', pack, countryIso = 'SA', emailDomains, timezone }) {
   const company = {
     id: id('co_'),
     name: String(name || 'Company').trim(),
     countryIso: countryOf(countryIso).iso,
+    emailDomains: domainsFromOwner(ownerEmail, emailDomains),
     createdAt: now(),
   };
   const pin = generatePin();
@@ -422,13 +561,14 @@ export async function createSite({ name, ownerName, ownerEmail, lang = 'ar', pac
     ownerEmail: ownerEmail || '',
     lang: lang === 'en' ? 'en' : 'ar',
     countryIso: company.countryIso,
+    timezone: isValidTimeZone(timezone) ? timezone : timezoneForCountry(company.countryIso),
     guardPinHash: hashPin(pin),
     createdAt: now(),
   };
   await withTransaction(async (client) => {
     await insertRow(
       'companies',
-      ['id', 'name', 'countryIso', 'createdAt'],
+      ['id', 'name', 'countryIso', 'emailDomains', 'createdAt'],
       company,
       client,
     );
@@ -444,6 +584,7 @@ export async function createSite({ name, ownerName, ownerEmail, lang = 'ar', pac
         'ownerEmail',
         'lang',
         'countryIso',
+        'timezone',
         'guardPinHash',
         'createdAt',
       ],
@@ -467,6 +608,15 @@ export async function createSite({ name, ownerName, ownerEmail, lang = 'ar', pac
   return { site, pin };
 }
 
+export async function updateSiteTimezone(siteId, timezone, meta = {}) {
+  const site = await getSite(siteId);
+  if (!site) return { error: 'not_found' };
+  if (!isValidTimeZone(timezone)) return { error: 'timezone_invalid' };
+  await query('UPDATE sites SET timezone = $1, updated_at = $2 WHERE id = $3', [timezone, now(), siteId]);
+  await writeAudit({ siteId, action: 'timezone_changed', actor: meta.actor, ip: meta.ip, device: meta.device, reason: timezone });
+  return { site: await getSite(siteId) };
+}
+
 export async function resetGuardPin(siteId, meta = {}) {
   const site = await getSite(siteId);
   if (!site) return { error: 'not_found' };
@@ -480,28 +630,46 @@ export async function resetGuardPin(siteId, meta = {}) {
   return { pin };
 }
 
-export async function addPerson(siteId, { name, role, phone, managerPhone, employeeId }, meta = {}) {
+export async function addPerson(siteId, { name, role, phone, email, managerPhone, managerId, employeeId, pin }, meta = {}) {
   const site = await getSite(siteId);
-  const p = phoneForSite(site, phone);
+  const company = await getCompany(site?.companyId);
+  const p = phone ? phoneForSite(site, phone) : { e164: '' };
   const m = managerPhone ? phoneForSite(site, managerPhone) : { e164: '' };
   if (phone && p.error) return { error: p.error, expected: p.expected };
   if (managerPhone && m.error) return { error: m.error, expected: m.expected };
+  const kind = role === 'manager' ? 'manager' : role === 'guard' ? 'guard' : 'employee';
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  if (kind === 'manager') {
+    if (!cleanEmail) return { error: 'email_required' };
+    if (!emailAllowed(company, cleanEmail)) return { error: 'email_domain_not_allowed' };
+  } else if (cleanEmail && !emailAllowed(company, cleanEmail)) {
+    return { error: 'email_domain_not_allowed' };
+  }
+  let pinHash = '';
+  let shownPin = '';
+  if (kind === 'guard') {
+    shownPin = pin ? String(pin) : generatePin();
+    pinHash = hashPin(shownPin);
+  }
   const person = {
     id: id('p_'),
     siteId,
     companyId: site?.companyId || '',
     name: String(name || '').trim(),
-    role: role === 'manager' ? 'manager' : 'employee',
+    role: kind,
     phone: p.e164 || '',
+    email: cleanEmail,
     managerPhone: m.e164 || '',
+    managerId: String(managerId || '').trim(),
     employeeId: String(employeeId || '').trim(),
+    pinHash,
     active: true,
     createdAt: now(),
   };
   await insertRow('people', personKeys, person);
   await note(siteId, 'person_added', `${person.name} added`, { personId: person.id }, meta.actor, meta.ip, meta.device);
   await emitPeople(siteId);
-  return { person };
+  return { person, pin: shownPin };
 }
 
 export async function createVisitor(input, meta = {}) {
@@ -527,6 +695,8 @@ export async function createVisitor(input, meta = {}) {
     expectedMinutes: 0,
     managerName: '',
     managerPhone: '',
+    managerEmail: '',
+    managerId: '',
     source: input.source === 'qr' ? 'qr' : 'guard',
     dayToken: await uniqueDayToken(input.siteId),
     magicTokenHash: '',
@@ -552,9 +722,19 @@ export async function createVisitor(input, meta = {}) {
 
 export async function createOutPass(input, meta = {}) {
   const site = await getSite(input.siteId);
-  const m = phoneForSite(site, input.managerPhone);
-  if (m.error) return { error: m.error, expected: m.expected };
-  const empPhone = input.phone ? phoneForSite(site, input.phone) : { e164: '' };
+  const company = await getCompany(site?.companyId);
+  const person = await getPerson(input.personId);
+  if (!person || person.siteId !== input.siteId || person.role === 'manager' || person.role === 'guard') {
+    return { error: 'person_required' };
+  }
+  let manager = null;
+  if (input.managerId) manager = await getPerson(input.managerId);
+  if (!manager && person.managerId) manager = await getPerson(person.managerId);
+  if (!manager || manager.siteId !== input.siteId || manager.role !== 'manager' || !manager.email) {
+    return { error: 'manager_required' };
+  }
+  if (!emailAllowed(company, manager.email)) return { error: 'email_domain_not_allowed' };
+  const empPhone = person.phone ? { e164: person.phone } : input.phone ? phoneForSite(site, input.phone) : { e164: '' };
   if (input.phone && empPhone.error) return { error: empPhone.error, expected: empPhone.expected };
   const minutes = Math.max(15, Number(input.expectedMinutes) || 60);
   const magicToken = newMagicToken();
@@ -565,19 +745,21 @@ export async function createOutPass(input, meta = {}) {
     companyId: site?.companyId || '',
     kind: 'outpass',
     status: 'waiting_approval',
-    name: String(input.name || '').trim(),
+    name: person.name,
     phone: empPhone.e164 || '',
     company: String(input.company || '').trim(),
     purpose: '',
     hostName: '',
     idNumber: '',
     cardNumber: '',
-    employeeId: String(input.employeeId || '').trim(),
-    personId: input.personId || '',
+    employeeId: person.employeeId || String(input.employeeId || '').trim(),
+    personId: person.id,
     reason: String(input.reason || '').trim(),
     expectedMinutes: minutes,
-    managerName: String(input.managerName || '').trim(),
-    managerPhone: m.e164,
+    managerName: manager.name,
+    managerPhone: manager.phone || '',
+    managerEmail: manager.email,
+    managerId: manager.id,
     source: input.source === 'qr' ? 'qr' : 'guard',
     dayToken: await uniqueDayToken(input.siteId),
     magicTokenHash: hashToken(magicToken),
@@ -616,15 +798,69 @@ export async function createOutPass(input, meta = {}) {
   return { entry, magicToken };
 }
 
+export async function rotateOutPassToken(entryId) {
+  const entry = await getEntry(entryId);
+  if (!entry || entry.kind !== 'outpass') return { error: 'not_found' };
+  if (entry.status !== 'waiting_approval') return { error: 'invalid_state', entry };
+  const magicToken = newMagicToken();
+  const expires = tokenExpiry();
+  const tokenHash = hashToken(magicToken);
+  await withTransaction(async (client) => {
+    await client.query(
+      'UPDATE entries SET magic_token_hash=$1, magic_token_expires_at=$2, magic_token_used_at=NULL, updated_at=$3 WHERE id=$4',
+      [tokenHash, expires, now(), entry.id],
+    );
+    await client.query('UPDATE approval_tokens SET used_at=$1 WHERE entry_id=$2 AND used_at IS NULL', [now(), entry.id]);
+    await insertRow(
+      'approval_tokens',
+      ['id', 'entryId', 'tokenHash', 'expiresAt', 'usedAt', 'createdAt'],
+      {
+        id: id('tok_'),
+        entryId: entry.id,
+        tokenHash,
+        expiresAt: expires,
+        usedAt: null,
+        createdAt: now(),
+      },
+      client,
+    );
+  });
+  Object.assign(entry, { magicTokenHash: tokenHash, magicTokenExpiresAt: expires, magicTokenUsedAt: null });
+  return { entry, magicToken };
+}
+
+export async function findGuardByPin(siteId, pin) {
+  const people = await listPeople(siteId);
+  const guards = people.filter((p) => p.role === 'guard' && p.pinHash);
+  for (const guard of guards) {
+    if (verifyPin(String(pin || ''), guard.pinHash)) return guard;
+  }
+  return null;
+}
+
+export async function resetGuardPersonPin(siteId, personId, meta = {}) {
+  const person = await getPerson(personId);
+  if (!person || person.siteId !== siteId || person.role !== 'guard') return { error: 'not_found' };
+  const pin = generatePin();
+  await query('UPDATE people SET pin_hash = $1 WHERE id = $2', [hashPin(pin), person.id]);
+  await writeAudit({ siteId, action: 'guard_pin_reset', actor: meta.actor, ip: meta.ip, device: meta.device, entryId: person.id });
+  return { pin, person: { id: person.id, name: person.name } };
+}
+
 export async function decideOutPass(magicToken, decision, denyReason = '', meta = {}) {
   const entry = await getEntryByToken(magicToken);
   if (!entry) return { error: 'not_found' };
   if (entry.kind !== 'outpass') return { error: 'not_outpass' };
   if (isMagicTokenExpired(entry)) return { error: 'token_expired' };
-  if (entry.status !== 'waiting_approval') return { error: 'already_decided', entry };
   const ok = decision === 'approve';
+  const want = ok ? 'approved_out' : 'denied';
+  if (entry.status !== 'waiting_approval') {
+    if (ok && ['approved_out', 'out', 'returned'].includes(entry.status)) return { entry };
+    if (!ok && entry.status === 'denied') return { entry };
+    return { error: 'invalid_state', entry };
+  }
   const patch = {
-    status: ok ? 'approved_out' : 'denied',
+    status: want,
     magicTokenUsedAt: now(),
     decidedAt: now(),
     updatedAt: now(),
@@ -663,10 +899,11 @@ const TRANSITIONS = {
     waiting_approval: { approved_out: 'decidedAt', denied: 'decidedAt' },
     approved_out: { out: 'outAt' },
     out: { returned: 'inAt' },
+    unapproved_leave: { returned: 'inAt' },
   },
 };
 
-const UNAPPROVED_FROM = ['waiting_approval', 'approved_out', 'out'];
+const UNAPPROVED_FROM = ['waiting_approval', 'approved_out'];
 
 function isAllowedTransition(kind, from, to) {
   return Boolean(TRANSITIONS[kind]?.[from]?.[to]);
@@ -674,8 +911,9 @@ function isAllowedTransition(kind, from, to) {
 
 async function touch(entry, status, field, kind, message, meta) {
   if (!entry) return { error: 'not_found' };
+  if (entry.status === status) return { entry };
   if (!isAllowedTransition(entry.kind, entry.status, status)) {
-    return { error: 'bad_transition', entry };
+    return { error: 'invalid_state', entry };
   }
   const patch = { status, [field]: now(), updatedAt: now() };
   await updateEntry(entry.id, patch);
@@ -712,12 +950,15 @@ export async function logIn(entryId, meta = {}) {
 export async function unapprovedLeave(entryId, reason, meta = {}) {
   const entry = await getEntry(entryId);
   if (!entry) return { error: 'not_found' };
+  const why = String(reason || '').trim();
+  if (why.length < 3) return { error: 'reason_required', entry };
+  if (entry.status === 'unapproved_leave') return { entry };
   if (entry.kind !== 'outpass' || !UNAPPROVED_FROM.includes(entry.status)) {
-    return { error: 'bad_transition', entry };
+    return { error: 'invalid_state', entry };
   }
   const patch = {
     status: 'unapproved_leave',
-    unapprovedReason: String(reason || '').trim(),
+    unapprovedReason: why,
     outAt: entry.outAt || now(),
     updatedAt: now(),
   };
@@ -728,32 +969,37 @@ export async function unapprovedLeave(entryId, reason, meta = {}) {
   return { entry };
 }
 
-export async function searchEntries(siteId, q) {
-  const query_text = String(q || '').trim().toLowerCase();
+export async function searchEntries(siteId, q, { cursor = '', limit = 100 } = {}) {
+  const needle = normalizeArabicText(q);
   const entries = await listEntries(siteId);
-  if (!query_text) return entries;
-  let qd = digits(query_text);
+  let qd = digits(q);
   if (qd.startsWith('00')) qd = qd.slice(2);
   if (qd.startsWith('0')) qd = qd.slice(1);
-  return entries.filter((e) => {
-    const text = [e.name, e.phone, e.dayToken, e.cardNumber, e.employeeId, e.company, e.hostName, e.managerName, e.managerPhone, e.idNumber, e.reason, e.purpose]
-      .join(' ')
-      .toLowerCase();
-    if (text.includes(query_text)) return true;
-    if (qd.length >= 3) {
-      const nums = [e.phone, e.managerPhone, e.employeeId, e.cardNumber, e.idNumber, e.dayToken].map(digits).join(' ');
-      if (nums.includes(qd)) return true;
-    }
-    return false;
-  });
+  const matched = needle
+    ? entries.filter((e) => {
+        const text = normalizeArabicText(
+          [e.name, e.company, e.hostName, e.reason, e.purpose, e.managerName].join(' '),
+        );
+        if (text.includes(needle)) return true;
+        const ids = [e.phone, e.employeeId, e.cardNumber, e.idNumber, e.dayToken].map(digits).join(' ');
+        if (qd && ids.includes(qd)) return true;
+        return false;
+      })
+    : entries;
+  const start = cursor ? matched.findIndex((e) => e.id === cursor) + 1 : 0;
+  const sliceStart = start < 0 ? 0 : start;
+  const page = matched.slice(sliceStart, sliceStart + Math.min(100, Math.max(1, Number(limit) || 100)));
+  const next = matched[sliceStart + page.length] ? matched[sliceStart + page.length - 1].id : '';
+  return { entries: page, nextCursor: next || '', total: matched.length };
 }
 
-export async function dashboard(siteId) {
+export async function dashboard(siteId, day) {
+  const site = await getSite(siteId);
+  const tz = site?.timezone || timezoneForCountry(site?.countryIso);
+  const localDay = day || todayLocalDate(tz);
+  const { start, end } = dayBounds(localDay, tz);
   const entries = await listEntries(siteId);
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const todayIso = start.toISOString();
-  const today = entries.filter((e) => e.createdAt >= todayIso);
+  const today = entries.filter((e) => e.createdAt >= start && e.createdAt < end);
   const inside = entries.filter((e) => e.status === 'inside').length;
   const waiting = entries.filter((e) => e.status === 'waiting_admit' || e.status === 'waiting_approval').length;
   const overdue = entries.filter((e) => e.kind === 'outpass' && e.status === 'out' && e.dueAt && e.dueAt < now()).length;
@@ -763,6 +1009,8 @@ export async function dashboard(siteId) {
     ? Math.round(returned.reduce((s, e) => s + (new Date(e.inAt) - new Date(e.outAt)) / 60000, 0) / returned.length)
     : 0;
   return {
+    day: localDay,
+    timezone: tz,
     todayTotal: today.length,
     todayVisitors: today.filter((e) => e.kind === 'visitor').length,
     todayOutpass: today.filter((e) => e.kind === 'outpass').length,
@@ -771,28 +1019,45 @@ export async function dashboard(siteId) {
     overdue,
     stillOut,
     avgMinutes: avgMin,
-    exceptions: overdue + entries.filter((e) => e.status === 'unapproved_leave' && e.createdAt >= todayIso).length,
+    exceptions: overdue + entries.filter((e) => e.status === 'unapproved_leave' && e.createdAt >= start && e.createdAt < end).length,
   };
 }
 
-export async function exportRows(siteId, { from, to, status, kind } = {}) {
+export async function exportRows(siteId, { from, to, status, kind, day } = {}) {
+  const site = await getSite(siteId);
+  const tz = site?.timezone || timezoneForCountry(site?.countryIso);
+  let fromIso = from;
+  let toIso = to;
+  if (day) {
+    const bounds = dayBounds(day, tz);
+    fromIso = bounds.start;
+    toIso = bounds.end;
+  }
   return (await listEntries(siteId))
     .filter((e) => {
-      if (from && e.createdAt < from) return false;
-      if (to && e.createdAt > to) return false;
+      if (fromIso && e.createdAt < fromIso) return false;
+      if (toIso && e.createdAt >= toIso && day) return false;
+      if (toIso && !day && e.createdAt > toIso) return false;
       if (status && e.status !== status) return false;
       if (kind && e.kind !== kind) return false;
       return true;
     })
-    .map((e) => safeEntry(e, { managerPhone: true }));
+    .map((e) => {
+      const row = { ...e };
+      delete row.magicToken;
+      delete row.magicTokenHash;
+      delete row.magicTokenExpiresAt;
+      delete row.magicTokenUsedAt;
+      return row;
+    });
 }
 
 export async function snapshot(siteId) {
   const site = await getSite(siteId);
   if (!site) return null;
   const [people, entries, events, stats] = await Promise.all([
-    listPeople(siteId),
-    listEntries(siteId),
+    listPeoplePublic(siteId),
+    listLiveEntries(siteId, site.timezone),
     query(
       'SELECT * FROM events WHERE site_id = $1 ORDER BY created_at DESC LIMIT 80',
       [siteId],
@@ -800,12 +1065,26 @@ export async function snapshot(siteId) {
     dashboard(siteId),
   ]);
   return {
-    site: publicSite(site),
+    site: redactSite(publicSite(site)),
     people,
-    entries: entries.map((e) => safeEntry(e, { managerPhone: true })),
+    entries: entries.map(redactEntry),
     events,
     stats,
   };
+}
+
+export async function retentionReport(days) {
+  const n = Math.max(1, Number(days) || 90);
+  const cutoff = new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+  const { rows } = await query(
+    `SELECT s.id, s.slug,
+            (SELECT count(*)::int FROM entries e WHERE e.site_id = s.id AND e.created_at < $1) AS old_entries,
+            (SELECT count(*)::int FROM audit_events a WHERE a.site_id = s.id AND a.created_at < $1) AS old_audit
+       FROM sites s
+       ORDER BY s.created_at ASC`,
+    [cutoff],
+  );
+  return { days: n, cutoff, sites: rows.map((r) => ({ siteId: r.id, slug: r.slug, oldEntries: r.old_entries, oldAudit: r.old_audit })) };
 }
 
 export async function seedDemoIfEmpty() {
@@ -817,6 +1096,7 @@ export async function seedDemoIfEmpty() {
     id: 'co_demo',
     name: 'Al-Noor Warehouse',
     countryIso: 'SA',
+    emailDomains: 'example.com',
     createdAt: now(),
   };
   const demoPin = process.env.DEMO_PIN || generatePin();
@@ -830,35 +1110,33 @@ export async function seedDemoIfEmpty() {
     ownerEmail: 'fahad@example.com',
     lang: 'ar',
     countryIso: 'SA',
+    timezone: 'Asia/Riyadh',
     guardPinHash: hashPin(demoPin),
     createdAt: now(),
   };
   await withTransaction(async (client) => {
-    await insertRow('companies', ['id', 'name', 'countryIso', 'createdAt'], company, client);
+    await insertRow('companies', ['id', 'name', 'countryIso', 'emailDomains', 'createdAt'], company, client);
     await insertRow(
       'sites',
-      ['id', 'companyId', 'slug', 'name', 'pack', 'ownerName', 'ownerEmail', 'lang', 'countryIso', 'guardPinHash', 'createdAt'],
+      ['id', 'companyId', 'slug', 'name', 'pack', 'ownerName', 'ownerEmail', 'lang', 'countryIso', 'timezone', 'guardPinHash', 'createdAt'],
       site,
       client,
     );
   });
   process.stdout.write(`gate-daftar demo booth PIN: ${demoPin}\n`);
-  for (const p of [
-    { name: 'Khalid Al-Harbi', role: 'manager', phone: '966500111222', managerPhone: '', employeeId: 'M-01' },
-    { name: 'Noura Al-Otaibi', role: 'manager', phone: '966500333444', managerPhone: '', employeeId: 'M-02' },
-    { name: 'Yousef Hassan', role: 'employee', phone: '966511222333', managerPhone: '966500111222', employeeId: 'E-104' },
-    { name: 'Ahmed Farouk', role: 'employee', phone: '966511444555', managerPhone: '966500111222', employeeId: 'E-118' },
-    { name: 'Sami Al-Dosari', role: 'employee', phone: '966511666777', managerPhone: '966500333444', employeeId: 'E-221' },
-  ]) {
-    await addPerson(site.id, p, { actor: { role: 'owner', name: 'Fahad' } });
-  }
+  const khalid = await addPerson(site.id, { name: 'Khalid Al-Harbi', role: 'manager', phone: '966500111222', email: 'khalid@example.com', employeeId: 'M-01' }, { actor: { role: 'owner', name: 'Fahad' } });
+  const noura = await addPerson(site.id, { name: 'Noura Al-Otaibi', role: 'manager', phone: '966500333444', email: 'noura@example.com', employeeId: 'M-02' }, { actor: { role: 'owner', name: 'Fahad' } });
+  const yousef = await addPerson(site.id, { name: 'Yousef Hassan', role: 'employee', phone: '966511222333', managerId: khalid.person.id, employeeId: 'E-104' }, { actor: { role: 'owner', name: 'Fahad' } });
+  const ahmed = await addPerson(site.id, { name: 'Ahmed Farouk', role: 'employee', phone: '966511444555', managerId: khalid.person.id, employeeId: 'E-118' }, { actor: { role: 'owner', name: 'Fahad' } });
+  await addPerson(site.id, { name: 'Sami Al-Dosari', role: 'employee', phone: '966511666777', managerId: noura.person.id, employeeId: 'E-221' }, { actor: { role: 'owner', name: 'Fahad' } });
+  await addPerson(site.id, { name: 'Guard Ali', role: 'guard', phone: '966500000001', employeeId: 'G-01' }, { actor: { role: 'owner', name: 'Fahad' } });
 
   await createVisitor({ siteId: site.id, name: 'Ibrahim Delivery', phone: '966555000111', company: 'Aramex', purpose: 'Parcel drop', hostName: 'Receiving', source: 'qr' }, { actor: { role: 'visitor', name: 'Ibrahim Delivery' } });
   await createVisitor({ siteId: site.id, name: 'Contractor Majed', phone: '966555222333', company: 'AC Fix Co', purpose: 'HVAC repair', hostName: 'Maintenance', source: 'guard' }, { actor: { role: 'guard', name: 'Booth' } });
   const admitted = await createVisitor({ siteId: site.id, name: 'Layla Supplier', phone: '966555888999', company: 'Gulf Parts', purpose: 'Parts delivery', hostName: 'Store', source: 'guard' }, { actor: { role: 'guard', name: 'Booth' } });
   if (admitted.entry) await admitVisitor(admitted.entry.id, { actor: { role: 'guard', name: 'Booth' } });
-  await createOutPass({ siteId: site.id, name: 'Yousef Hassan', employeeId: 'E-104', reason: 'Bank errand', expectedMinutes: 90, managerPhone: '966500111222', managerName: 'Khalid Al-Harbi', source: 'qr' }, { actor: { role: 'employee', name: 'Yousef Hassan' } });
-  const approved = await createOutPass({ siteId: site.id, name: 'Ahmed Farouk', employeeId: 'E-118', reason: 'Lunch', expectedMinutes: 45, managerPhone: '966500111222', managerName: 'Khalid Al-Harbi', source: 'guard' }, { actor: { role: 'guard', name: 'Booth' } });
+  await createOutPass({ siteId: site.id, personId: yousef.person.id, managerId: khalid.person.id, reason: 'Bank errand', expectedMinutes: 90, source: 'qr' }, { actor: { role: 'employee', name: 'Yousef Hassan' } });
+  const approved = await createOutPass({ siteId: site.id, personId: ahmed.person.id, managerId: khalid.person.id, reason: 'Lunch', expectedMinutes: 45, source: 'guard' }, { actor: { role: 'guard', name: 'Booth' } });
   if (approved.entry) await decideOutPass(approved.magicToken, 'approve', '', { actor: { role: 'manager', name: 'Khalid Al-Harbi', hint: 'seed' } });
   return getSite(site.id);
 }

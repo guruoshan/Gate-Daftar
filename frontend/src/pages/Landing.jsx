@@ -14,6 +14,9 @@ export default function Landing({ t }) {
           <Link className="ghost" to="/booth/demo" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
             {t.openDemo}
           </Link>
+          <Link className="ghost" to="/login" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
+            {t.ownerLogin}
+          </Link>
         </div>
       </section>
 

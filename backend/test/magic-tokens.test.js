@@ -3,25 +3,16 @@ import request from 'supertest';
 import { app } from '../src/index.js';
 import { getDb } from '../src/store.js';
 import { query } from '../src/db.js';
-import { createOwnedSite, resetAll } from './helpers.js';
+import { createOwnedSite, createOutpass, resetAll } from './helpers.js';
 
 beforeEach(async () => {
   await resetAll();
 });
 
 async function makeOutpass(cookie, slug) {
-  const res = await request(app)
-    .post(`/api/sites/${slug}/outpass`)
-    .set('Cookie', cookie)
-    .send({
-      name: 'Ahmed',
-      reason: 'Lunch',
-      managerName: 'Khalid',
-      managerPhone: '966500111222',
-      expectedMinutes: 45,
-    });
-  const stored = (await getDb()).entries.find((e) => e.id === res.body.entry.id);
-  return { raw: res.body.entry.pageUrl.split('/').pop(), stored };
+  const made = await createOutpass(cookie, slug);
+  const stored = (await getDb()).entries.find((e) => e.id === made.entry.id);
+  return { raw: made.token, stored };
 }
 
 describe('Magic tokens: hashed, expiring, single use, bound to the pass', () => {
@@ -40,8 +31,8 @@ describe('Magic tokens: hashed, expiring, single use, bound to the pass', () => 
     const first = await request(app).post(`/api/approve/${raw}`).send({ decision: 'approve' });
     expect(first.status).toBe(200);
     const again = await request(app).post(`/api/approve/${raw}`).send({ decision: 'approve' });
-    expect(again.status).toBe(400);
-    expect(again.body.error).toBe('already_decided');
+    expect(again.status).toBe(200);
+    expect(again.body.entry.status).toBe('approved_out');
   });
 
   it('refuses a wrong token', async () => {

@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { api } from '../api.js';
-import ManagerFields from '../components/ManagerFields.jsx';
 import PhoneField from '../components/PhoneField.jsx';
-import ShareBar from '../components/ShareBar.jsx';
 import { phoneOk } from '../countries.js';
 
 const DURS = [45, 60, 90, 180];
@@ -11,25 +9,26 @@ const DURS = [45, 60, 90, 180];
 export default function Gate({ t, lang, setLang }) {
   const { siteId } = useParams();
   const [site, setSite] = useState(null);
-  const [people, setPeople] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [managers, setManagers] = useState([]);
   const [mode, setMode] = useState('');
   const [done, setDone] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [v, setV] = useState({ name: '', phone: '', company: '', purpose: '', hostName: '', idNumber: '', cardNumber: '' });
-  const [o, setO] = useState({ name: '', phone: '', employeeId: '', reason: '', expectedMinutes: 60, managerPhone: '', managerName: '', personId: '' });
+  const [o, setO] = useState({ personId: '', managerId: '', reason: '', expectedMinutes: 60 });
 
   useEffect(() => {
     api.publicSite(siteId).then((d) => {
       setSite(d.site);
-      setPeople([]);
+      setEmployees(d.employees || []);
+      setManagers(d.managers || []);
     }).catch(() => setSite({ name: '', slug: siteId, id: siteId }));
   }, [siteId, lang]);
 
-  const managers = useMemo(() => people.filter((p) => p.role === 'manager'), [people]);
-  const employees = useMemo(() => people.filter((p) => p.role !== 'manager'), [people]);
   const sid = site?.id || siteId;
   const iso = site?.countryIso || 'SA';
+  const picked = useMemo(() => employees.find((p) => p.id === o.personId), [employees, o.personId]);
 
   async function submitVisitor(e) {
     e.preventDefault();
@@ -52,8 +51,8 @@ export default function Gate({ t, lang, setLang }) {
   async function submitOut(e) {
     e.preventDefault();
     setErr('');
-    if (!o.name.trim() || !o.reason.trim() || !o.managerName.trim() || !phoneOk(o.managerPhone)) {
-      setErr(!phoneOk(o.managerPhone) ? 'phone' : 'req');
+    if (!o.personId || !o.managerId || !o.reason.trim()) {
+      setErr('req');
       return;
     }
     setBusy(true);
@@ -61,7 +60,7 @@ export default function Gate({ t, lang, setLang }) {
       const d = await api.gateOutpass(sid, { ...o, lang });
       setDone({ kind: 'outpass', entry: d.entry });
     } catch (fail) {
-      setErr(fail.body?.error === 'phone_invalid' ? 'phone' : 'fail');
+      setErr(fail.body?.error || 'fail');
     } finally {
       setBusy(false);
     }
@@ -70,25 +69,14 @@ export default function Gate({ t, lang, setLang }) {
   function pickEmp(id) {
     const p = employees.find((x) => x.id === id);
     if (!p) {
-      setO({ ...o, personId: '' });
+      setO({ ...o, personId: '', managerId: '' });
       return;
     }
-    const mgr = people.find((x) => x.phone === p.managerPhone && x.role === 'manager');
     setO({
       ...o,
       personId: p.id,
-      name: p.name,
-      phone: p.phone || o.phone,
-      employeeId: p.employeeId || '',
-      managerPhone: p.managerPhone || o.managerPhone,
-      managerName: mgr?.name || o.managerName,
+      managerId: p.managerId || o.managerId,
     });
-  }
-
-  function pickMgr(id) {
-    const m = managers.find((x) => x.id === id);
-    if (!m) return;
-    setO({ ...o, managerPhone: m.phone, managerName: m.name });
   }
 
   return (
@@ -117,9 +105,7 @@ export default function Gate({ t, lang, setLang }) {
             {done.kind === 'outpass' ? ` · ${t.outpass}` : ` · ${t.visitor}`}
             {done.entry.managerName ? ` · ${done.entry.managerName}` : ''}
           </p>
-          {done.kind === 'outpass' && (
-            <ShareBar entry={done.entry} t={t} />
-          )}
+          {done.kind === 'outpass' && <p className="muted">{t.emailSent}</p>}
           <button type="button" className="ghost" onClick={() => { setDone(null); setMode(''); }}>
             {t.close}
           </button>
@@ -174,51 +160,47 @@ export default function Gate({ t, lang, setLang }) {
       {!done && mode === 'outpass' && (
         <form className="card" onSubmit={submitOut}>
           <h2>{t.outpass}</h2>
-          {employees.length > 0 && (
+          <p className="muted">{t.rosterOnly}</p>
+          {employees.length === 0 ? (
+            <p className="field-err">{t.noRoster}</p>
+          ) : (
             <>
-              <label htmlFor="ep">{t.pickPerson}</label>
+              <label htmlFor="ep">{t.pickPerson}<span className="req">*</span></label>
               <select id="ep" value={o.personId} onChange={(e) => pickEmp(e.target.value)}>
-                <option value="">{t.orType}</option>
+                <option value="">{t.pickPerson}</option>
                 {employees.map((p) => (
                   <option key={p.id} value={p.id}>{p.name}{p.employeeId ? ` · ${p.employeeId}` : ''}</option>
                 ))}
               </select>
+              {picked && <p className="muted">{picked.name}{picked.employeeId ? ` · ${picked.employeeId}` : ''}</p>}
+              <label htmlFor="om">{t.selectManager}<span className="req">*</span></label>
+              <select id="om" value={o.managerId} onChange={(e) => setO({ ...o, managerId: e.target.value })}>
+                <option value="">{t.selectManager}</option>
+                {managers.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </select>
+              <label htmlFor="or">{t.reason}<span className="req">*</span></label>
+              <input id="or" value={o.reason} placeholder={t.reasonPh} onChange={(e) => setO({ ...o, reason: e.target.value })} />
+              <label>{t.duration}</label>
+              <div className="seg">
+                {DURS.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    className={o.expectedMinutes === m ? 'btn' : 'ghost'}
+                    onClick={() => setO({ ...o, expectedMinutes: m })}
+                  >
+                    {m === 180 ? t.duration180 : m === 45 ? t.duration45 : m === 90 ? t.duration90 : t.duration60}
+                  </button>
+                ))}
+              </div>
             </>
           )}
-          <label htmlFor="on">{t.name}<span className="req">*</span></label>
-          <input id="on" value={o.name} placeholder={t.namePh} onChange={(e) => setO({ ...o, name: e.target.value })} />
-          <PhoneField
-            id="op"
-            label={t.phone}
-            iso={iso}
-            value={o.phone}
-            onChange={(phone) => setO({ ...o, phone })}
-            t={t}
-            lang={lang}
-          />
-          <label htmlFor="oid">{t.empId}</label>
-          <input id="oid" value={o.employeeId} onChange={(e) => setO({ ...o, employeeId: e.target.value })} />
-          <label htmlFor="or">{t.reason}<span className="req">*</span></label>
-          <input id="or" value={o.reason} placeholder={t.reasonPh} onChange={(e) => setO({ ...o, reason: e.target.value })} />
-          <label>{t.duration}</label>
-          <div className="seg">
-            {DURS.map((m) => (
-              <button
-                key={m}
-                type="button"
-                className={o.expectedMinutes === m ? 'btn' : 'ghost'}
-                onClick={() => setO({ ...o, expectedMinutes: m })}
-              >
-                {m === 180 ? t.duration180 : m === 45 ? t.duration45 : m === 90 ? t.duration90 : t.duration60}
-              </button>
-            ))}
-          </div>
-          <ManagerFields t={t} lang={lang} iso={iso} o={o} setO={setO} managers={managers} pickMgr={pickMgr} />
-          {err === 'phone' && <div className="field-err">{t.phoneInvalid}</div>}
-          {err && err !== 'phone' && <div className="field-err">{t.required}</div>}
+          {err && <div className="field-err">{err === 'email_domain_not_allowed' ? t.emailDomainBad : t.required}</div>}
           <div className="cta-row">
             <button className="ghost" type="button" onClick={() => setMode('')}>{t.cancel}</button>
-            <button className="btn" type="submit" disabled={busy}>{busy ? t.sending : t.submit}</button>
+            <button className="btn" type="submit" disabled={busy || employees.length === 0}>{busy ? t.sending : t.submit}</button>
           </div>
         </form>
       )}

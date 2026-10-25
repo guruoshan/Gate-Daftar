@@ -110,7 +110,7 @@ npm run build
 | TEST_DATABASE_URL | A separate database used only by the automated checks |
 | PG_POOL_MAX | How many database connections the server keeps open |
 | SESSION_SECRET | A long random phrase used to protect login cookies |
-| RETENTION_DAYS | How many days to keep old records (policy, not yet enforced automatically) |
+| RETENTION_DAYS | How many days old backups are listed by `npm run backup -- --prune`. Nothing is deleted automatically |
 
 ## Moving to a hosted database later
 
@@ -131,7 +131,46 @@ cd backend
 npm run db:import -- ../backend/data/db.json
 ```
 
-The import script rebuilds the audit chain and replaces any stored approval links with a scrambled hash. It refuses to run on a database that already has records unless you add `--force`.
+The import script rebuilds the audit chain and replaces any stored approval links with a scrambled hash. It refuses to run on a database that already has records unless you add `--force`. If the database is empty when the server starts and `backend/data/db.json` is present, the server imports it once. If that import fails, the server stops instead of starting empty.
+
+## Backup and restore
+
+These commands copy the PostgreSQL database. They do not print personal details.
+
+```bash
+cd backend
+npm run backup
+```
+
+That writes a timestamped file under `backend/backups/`. To list old copies without deleting them:
+
+```bash
+cd backend
+npm run backup -- --prune
+```
+
+Stop the server before restoring. Restore refuses to run while the server is up.
+
+```bash
+cd backend
+npm run restore
+```
+
+You can pass a specific file: `npm run restore -- backend/backups/gate-daftar-YYYYMMDD-HHMMSS.dump`
+
+Check that the audit chain still hashes correctly:
+
+```bash
+cd backend
+npm run verify-audit
+```
+
+See how many records are older than the retention window (nothing is deleted):
+
+```bash
+cd backend
+npm run retention-report
+```
 
 ## Database tables
 

@@ -3,7 +3,7 @@ import request from 'supertest';
 import { app } from '../src/index.js';
 import { getDb, verifyAudit } from '../src/store.js';
 import { query } from '../src/db.js';
-import { createOwnedSite, unlockBooth, resetAll } from './helpers.js';
+import { createOwnedSite, createOutpass, unlockBooth, resetAll } from './helpers.js';
 
 beforeEach(async () => {
   await resetAll();
@@ -39,17 +39,9 @@ describe('Fix 10: audit has real identity and a real hash chain', () => {
 
   it('records the booth session as the actor, not a browser supplied name', async () => {
     const { site } = await createOwnedSite();
-    const requested = await request(app)
-      .post(`/api/sites/${site.slug}/outpass`)
-      .set('Cookie', (await unlockBooth(site.slug, site.guardPin)).cookie)
-      .send({
-        name: 'Ahmed',
-        reason: 'Lunch',
-        managerName: 'Khalid',
-        managerPhone: '966500111222',
-        expectedMinutes: 45,
-      });
-    expect(requested.status).toBe(200);
+    const booth = await unlockBooth(site.slug, site.guardPin);
+    const requested = await createOutpass(booth.cookie, site.slug);
+    expect(requested.res.status).toBe(200);
     const entryAudit = (await getDb())
       .audit.filter((a) => a.action === 'outpass_requested')
       .pop();

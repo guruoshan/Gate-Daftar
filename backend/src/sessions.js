@@ -11,19 +11,49 @@ function tableFor(role) {
   return role === 'booth' ? 'device_sessions' : 'sessions';
 }
 
-export async function createSession({ role, siteId, companyId, name }) {
+function sessionSecret() {
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  if (process.env.NODE_ENV === 'production') return '';
+  return 'dev-session-secret';
+}
+
+export function signValue(id) {
+  const secret = sessionSecret();
+  if (!secret || !id) return '';
+  const sig = crypto.createHmac('sha256', secret).update(String(id)).digest('base64url');
+  return `${id}.${sig}`;
+}
+
+export function unsignValue(raw) {
+  const text = String(raw || '');
+  const idx = text.lastIndexOf('.');
+  if (idx < 1) return null;
+  const id = text.slice(0, idx);
+  const sig = text.slice(idx + 1);
+  const expected = signValue(id).slice(id.length + 1);
+  if (!expected || sig.length !== expected.length) return null;
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  } catch {
+    return null;
+  }
+  return id;
+}
+
+export async function createSession({ role, siteId, companyId, name, personId }) {
   const session = {
     id: crypto.randomBytes(24).toString('base64url'),
     role,
     siteId: siteId || '',
     companyId: companyId || '',
     name: name || '',
+    personId: personId || '',
   };
   const expiresAt = new Date(Date.now() + MAX_AGE_SECONDS * 1000).toISOString();
   await query(
-    `INSERT INTO ${tableFor(role)} (id, role, site_id, company_id, name, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
-    [session.id, role, siteId || null, companyId || null, session.name, expiresAt],
+    `INSERT INTO ${tableFor(role)} (id, role, site_id, company_id, name, person_id, expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [session.id, role, siteId || null, companyId || null, session.name, session.personId || '', expiresAt],
   );
   return session;
 }
@@ -31,10 +61,10 @@ export async function createSession({ role, siteId, companyId, name }) {
 export async function getSession(id) {
   if (!id) return null;
   const { rows } = await query(
-    `SELECT id, role, site_id, company_id, name, expires_at,
+    `SELECT id, role, site_id, company_id, name, person_id, expires_at,
             'sessions' AS source FROM sessions WHERE id = $1
      UNION ALL
-     SELECT id, role, site_id, company_id, name, expires_at,
+     SELECT id, role, site_id, company_id, name, person_id, expires_at,
             'device_sessions' AS source FROM device_sessions WHERE id = $1
      LIMIT 1`,
     [id],
@@ -51,6 +81,7 @@ export async function getSession(id) {
     siteId: row.site_id || '',
     companyId: row.company_id || '',
     name: row.name || '',
+    personId: row.person_id || '',
   };
 }
 
@@ -122,17 +153,17 @@ function appendCookie(res, line) {
 }
 
 export function setOwnerCookie(res, session) {
-  appendCookie(res, cookieLine(COOKIE_OWNER, session.id));
+  appendCookie(res, cookieLine(COOKIE_OWNER, signValue(session.id)));
 }
 
 export function setBoothCookie(res, session) {
-  appendCookie(res, cookieLine(COOKIE_BOOTH, session.id));
+  appendCookie(res, cookieLine(COOKIE_BOOTH, signValue(session.id)));
 }
 
 export async function readSessions(req) {
   const cookies = parseCookies(req);
-  const ownerRaw = await getSession(cookies[COOKIE_OWNER]);
-  const boothRaw = await getSession(cookies[COOKIE_BOOTH]);
+  const ownerRaw = await getSession(unsignValue(cookies[COOKIE_OWNER]));
+  const boothRaw = await getSession(unsignValue(cookies[COOKIE_BOOTH]));
   return {
     owner: ownerRaw && ownerRaw.role === 'owner' ? ownerRaw : null,
     booth: boothRaw && boothRaw.role === 'booth' ? boothRaw : null,

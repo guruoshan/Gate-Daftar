@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { IconPlus, IconQr } from '../icons.jsx';
-import ShareBar from '../components/ShareBar.jsx';
-import ManagerFields from '../components/ManagerFields.jsx';
 import PhoneField from '../components/PhoneField.jsx';
 import { entryFields, matchQuery, phoneOk } from '../countries.js';
 import {
@@ -48,6 +46,11 @@ export default function Booth({ t, lang, setLang }) {
   const [toast, setToast] = useState('');
   const [q, setQ] = useState('');
   const [una, setUna] = useState(null);
+  const [guards, setGuards] = useState([]);
+  const [guardId, setGuardId] = useState('');
+  const [remoteHits, setRemoteHits] = useState([]);
+  const [nextCursor, setNextCursor] = useState('');
+  const [searching, setSearching] = useState(false);
 
   const live = useLive(authed ? siteId : '', lang);
   const { site, people, entries, live: isLive } = live;
@@ -64,6 +67,9 @@ export default function Booth({ t, lang, setLang }) {
       .finally(() => {
         if (!stop) setChecking(false);
       });
+    api.guards(siteId).then((d) => {
+      if (!stop) setGuards(d.guards || []);
+    }).catch(() => {});
     return () => {
       stop = true;
     };
@@ -78,7 +84,7 @@ export default function Booth({ t, lang, setLang }) {
   async function unlock(code) {
     setPinErr('');
     try {
-       await api.unlock({ slug: siteId, pin: code });
+        await api.unlock({ slug: siteId, pin: code, personId: guardId || undefined });
        setAuthed(true);
     } catch {
       setPinErr(t.pinBad);
@@ -98,11 +104,39 @@ export default function Booth({ t, lang, setLang }) {
   const approved = approvedList(entries);
   const inside = insideList(entries);
   const overdue = entries.filter(isOverdue);
+  useEffect(() => {
+    const query = q.trim();
+    if (!authed || !query) {
+      setRemoteHits([]);
+      setNextCursor('');
+      return undefined;
+    }
+    let stop = false;
+    setSearching(true);
+    api.search(siteId, query)
+      .then((d) => {
+        if (stop) return;
+        setRemoteHits(d.entries || []);
+        setNextCursor(d.nextCursor || '');
+      })
+      .catch(() => {
+        if (!stop) setRemoteHits([]);
+      })
+      .finally(() => {
+        if (!stop) setSearching(false);
+      });
+    return () => {
+      stop = true;
+    };
+  }, [authed, siteId, q]);
+
   const searched = useMemo(() => {
     const query = q.trim();
     if (!query) return entries;
-    return entries.filter((e) => matchQuery(entryFields(e), query));
-  }, [entries, q]);
+    const local = entries.filter((e) => matchQuery(entryFields(e), query));
+    const seen = new Set(local.map((e) => e.id));
+    return [...local, ...remoteHits.filter((e) => !seen.has(e.id))];
+  }, [entries, q, remoteHits]);
 
   const counts = {
     waiting: waiting.length,
@@ -125,6 +159,17 @@ export default function Booth({ t, lang, setLang }) {
         <h1>{t.pinUnlock}</h1>
         <p className="lede">{siteId === 'demo' ? t.demoHint : t.booth}</p>
         <div className="card">
+          {guards.length > 0 && (
+            <>
+              <label htmlFor="gid">{t.pickGuard}</label>
+              <select id="gid" value={guardId} onChange={(e) => setGuardId(e.target.value)}>
+                <option value="">{t.sharedPin}</option>
+                {guards.map((g) => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+            </>
+          )}
           <div className="token-xl" style={{ textAlign: 'center' }}>
             {pin.padEnd(PIN_LEN, '·')}
           </div>
@@ -244,7 +289,7 @@ export default function Booth({ t, lang, setLang }) {
             {tab === 'waiting' && t.emptyWait}
             {tab === 'approved' && t.emptyApproved}
             {tab === 'inside' && t.emptyInside}
-            {tab === 'search' && (q ? t.noResults : t.emptySearch)}
+            {tab === 'search' && (searching ? t.sending : q ? t.noResults : t.emptySearch)}
           </div>
         )}
         {list.map((entry) => (
@@ -253,10 +298,28 @@ export default function Booth({ t, lang, setLang }) {
             entry={entry}
             t={t}
             lang={lang}
+            timeZone={site?.timezone}
             onToast={setToast}
             onUna={setUna}
           />
         ))}
+        {tab === 'search' && nextCursor && (
+          <button
+            type="button"
+            className="ghost"
+            onClick={async () => {
+              try {
+                const d = await api.search(siteId, q, nextCursor);
+                setRemoteHits((prev) => [...prev, ...(d.entries || [])]);
+                setNextCursor(d.nextCursor || '');
+              } catch {
+                setNextCursor('');
+              }
+            }}
+          >
+            {t.loadMore}
+          </button>
+        )}
       </section>
 
       {modal === 'create' && (
@@ -287,14 +350,14 @@ export default function Booth({ t, lang, setLang }) {
   );
 }
 
-function EntryCard({ entry, t, lang, onToast, onUna }) {
+function EntryCard({ entry, t, lang, timeZone, onToast, onUna }) {
   const overdue = isOverdue(entry);
   async function run(fn, okMsg) {
     try {
       await fn();
       if (okMsg) onToast(okMsg);
-    } catch {
-      onToast(t.already);
+    } catch (e) {
+      onToast(e.body?.error === 'invalid_state' ? t.invalidState : t.already);
     }
   }
 
@@ -309,7 +372,7 @@ function EntryCard({ entry, t, lang, onToast, onUna }) {
             {entry.phone ? ` · ${entry.phone}` : ''}
             {entry.employeeId ? ` · ${entry.employeeId}` : ''}
             {entry.source === 'qr' ? ` · ${t.sourceQr}` : ` · ${t.sourceGuard}`}
-            {entry.createdAt ? ` · ${fmtTime(entry.createdAt, lang)}` : ''}
+            {entry.createdAt ? ` · ${fmtTime(entry.createdAt, lang, timeZone)}` : ''}
           </div>
           {entry.kind === 'visitor' && (
             <div className="meta">
@@ -341,7 +404,10 @@ function EntryCard({ entry, t, lang, onToast, onUna }) {
         )}
         {entry.status === 'waiting_approval' && (
           <>
-            <ShareBar entry={entry} t={t} onToast={onToast} compact />
+            {entry.managerName ? <span className="meta">{entry.managerName}</span> : null}
+            <button type="button" className="ghost" onClick={() => run(() => api.resend(entry.id, lang), t.resent)}>
+              {t.resend}
+            </button>
             <button type="button" className="btn-bad" onClick={() => onUna(entry)}>
               {t.unapproved}
             </button>
@@ -373,32 +439,22 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
   const [err, setErr] = useState('');
   const [created, setCreated] = useState(null);
   const [v, setV] = useState({ name: '', phone: '', company: '', purpose: '', hostName: '', idNumber: '', cardNumber: '' });
-  const [o, setO] = useState({ name: '', phone: '', employeeId: '', reason: '', expectedMinutes: 60, managerPhone: '', managerName: '', personId: '' });
+  const [o, setO] = useState({ personId: '', managerId: '', reason: '', expectedMinutes: 60 });
   const managers = people.filter((p) => p.role === 'manager');
-  const employees = people.filter((p) => p.role !== 'manager');
+  const employees = people.filter((p) => p.role !== 'manager' && p.role !== 'guard');
+  const picked = employees.find((p) => p.id === o.personId);
 
   function pickEmp(id) {
     const p = employees.find((x) => x.id === id);
     if (!p) {
-      setO({ ...o, personId: '' });
+      setO({ ...o, personId: '', managerId: '' });
       return;
     }
-    const mgr = people.find((x) => x.phone === p.managerPhone && x.role === 'manager');
     setO({
       ...o,
       personId: p.id,
-      name: p.name,
-      phone: p.phone || o.phone,
-      employeeId: p.employeeId || '',
-      managerPhone: p.managerPhone || o.managerPhone,
-      managerName: mgr?.name || o.managerName,
+      managerId: p.managerId || o.managerId,
     });
-  }
-
-  function pickMgr(id) {
-    const m = managers.find((x) => x.id === id);
-    if (!m) return;
-    setO({ ...o, managerPhone: m.phone, managerName: m.name });
   }
 
   async function submit(e) {
@@ -415,8 +471,8 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
         await api.visitor(siteId, { ...v, source: 'guard' });
         onToast(t.visitor);
       } else {
-        if (!o.name.trim() || !o.reason.trim() || !o.managerName.trim() || !phoneOk(o.managerPhone)) {
-          setErr(!phoneOk(o.managerPhone) ? 'phone' : 'req');
+        if (!o.personId || !o.managerId || !o.reason.trim()) {
+          setErr('req');
           setBusy(false);
           return;
         }
@@ -427,7 +483,11 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
       }
       onClose();
     } catch (fail) {
-      setErr(fail.body?.error === 'phone_invalid' ? 'phone' : 'fail');
+      const code = fail.body?.error;
+      if (code === 'phone_invalid') setErr('phone');
+      else if (code === 'email_domain_not_allowed') setErr('email_domain');
+      else if (code === 'mail_not_configured') setErr('mail');
+      else setErr('fail');
     } finally {
       setBusy(false);
     }
@@ -441,7 +501,8 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
             <h2>{t.outpass}</h2>
             <p className="muted">{t.sayToken}</p>
             <div className="token-xl">{created.dayToken}</div>
-            <ShareBar entry={created} t={t} onToast={onToast} />
+            <p className="muted">{created.managerName ? `${created.name} · ${created.managerName}` : created.name}</p>
+            <p className="muted">{t.emailSent}</p>
             <button type="button" className="btn" onClick={onClose}>{t.close}</button>
           </>
         ) : (
@@ -484,48 +545,47 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
             </>
           ) : (
             <>
-              {employees.length > 0 && (
+              <p className="muted">{t.rosterOnly}</p>
+              {employees.length === 0 ? (
+                <p className="field-err">{t.noRoster}</p>
+              ) : (
                 <>
-                  <label htmlFor="ep">{t.pickPerson}</label>
+                  <label htmlFor="ep">{t.pickPerson}<span className="req">*</span></label>
                   <select id="ep" value={o.personId} onChange={(e) => pickEmp(e.target.value)}>
-                    <option value="">{t.orType}</option>
+                    <option value="">{t.pickPerson}</option>
                     {employees.map((p) => (
                       <option key={p.id} value={p.id}>{p.name}{p.employeeId ? ` · ${p.employeeId}` : ''}</option>
                     ))}
                   </select>
+                  {picked && <p className="muted">{picked.name}{picked.employeeId ? ` · ${picked.employeeId}` : ''}</p>}
+                  <label htmlFor="om">{t.selectManager}<span className="req">*</span></label>
+                  <select id="om" value={o.managerId} onChange={(e) => setO({ ...o, managerId: e.target.value })}>
+                    <option value="">{t.selectManager}</option>
+                    {managers.map((m) => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </select>
+                  <label htmlFor="or">{t.reason}<span className="req">*</span></label>
+                  <input id="or" value={o.reason} placeholder={t.reasonPh} onChange={(e) => setO({ ...o, reason: e.target.value })} />
+                  <label>{t.duration}</label>
+                  <div className="seg">
+                    {DURS.map((m) => (
+                      <button key={m} type="button" className={o.expectedMinutes === m ? 'btn' : 'ghost'} onClick={() => setO({ ...o, expectedMinutes: m })}>
+                        {m === 180 ? t.duration180 : m === 45 ? t.duration45 : m === 90 ? t.duration90 : t.duration60}
+                      </button>
+                    ))}
+                  </div>
                 </>
               )}
-              <label htmlFor="on">{t.name}<span className="req">*</span></label>
-              <input id="on" value={o.name} placeholder={t.namePh} onChange={(e) => setO({ ...o, name: e.target.value })} />
-              <PhoneField
-                id="op"
-                label={t.phone}
-                iso={iso}
-                value={o.phone}
-                onChange={(phone) => setO({ ...o, phone })}
-                t={t}
-                lang={lang}
-              />
-              <label htmlFor="oid">{t.empId}</label>
-              <input id="oid" value={o.employeeId} onChange={(e) => setO({ ...o, employeeId: e.target.value })} />
-              <label htmlFor="or">{t.reason}<span className="req">*</span></label>
-              <input id="or" value={o.reason} placeholder={t.reasonPh} onChange={(e) => setO({ ...o, reason: e.target.value })} />
-              <label>{t.duration}</label>
-              <div className="seg">
-                {DURS.map((m) => (
-                  <button key={m} type="button" className={o.expectedMinutes === m ? 'btn' : 'ghost'} onClick={() => setO({ ...o, expectedMinutes: m })}>
-                    {m === 180 ? t.duration180 : m === 45 ? t.duration45 : m === 90 ? t.duration90 : t.duration60}
-                  </button>
-                ))}
-              </div>
-              <ManagerFields t={t} lang={lang} iso={iso} o={o} setO={setO} managers={managers} pickMgr={pickMgr} />
             </>
           )}
-          {err === 'phone' && kind !== 'visitor' && <div className="field-err">{t.phoneInvalid}</div>}
-          {err && err !== 'phone' && <div className="field-err">{t.required}</div>}
+          {err === 'phone' && <div className="field-err">{t.phoneInvalid}</div>}
+          {err === 'email_domain' && <div className="field-err">{t.emailDomainBad}</div>}
+          {err === 'mail' && <div className="field-err">{t.mailNotConfigured}</div>}
+          {err && err !== 'phone' && err !== 'email_domain' && err !== 'mail' && <div className="field-err">{t.required}</div>}
           <div className="cta-row">
             <button type="button" className="ghost" onClick={onClose}>{t.cancel}</button>
-            <button type="submit" className="btn" disabled={busy}>{busy ? t.sending : t.submit}</button>
+            <button type="submit" className="btn" disabled={busy || (kind === 'outpass' && employees.length === 0)}>{busy ? t.sending : t.submit}</button>
           </div>
         </form>
           </>

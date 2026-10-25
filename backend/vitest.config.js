@@ -12,6 +12,7 @@ export default defineConfig({
     env: {
       NODE_ENV: 'test',
       DATABASE_URL: TEST_DB,
+      TZ: 'UTC',
     },
   },
 });

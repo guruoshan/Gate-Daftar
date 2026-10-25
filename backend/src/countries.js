@@ -16,8 +16,12 @@ export function countryOf(iso) {
   return COUNTRIES.find((c) => c.iso === iso) || COUNTRIES[0];
 }
 
+import { digits as normalizeDigitString } from './text.js';
+
+export { normalizeDigits, normalizeArabicText } from './text.js';
+
 export function digits(value) {
-  return String(value || '').replace(/\D/g, '');
+  return normalizeDigitString(value);
 }
 
 export function guessIso(raw, fallback = 'SA') {
