@@ -20,11 +20,14 @@ afterEach(() => {
   });
 });
 
+let n = 0;
 async function makeSite() {
+  n += 1;
   return request(app).post('/api/sites').send({
     name: 'Gate',
     ownerName: 'Owner',
-    ownerEmail: 'owner@example.com',
+    ownerEmail: `owner${n}@example.com`,
+    password: 'password1',
     lang: 'en',
     pack: 'warehouse',
     countryIso: 'SA',

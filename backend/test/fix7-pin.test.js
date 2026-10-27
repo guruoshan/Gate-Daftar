@@ -19,12 +19,13 @@ afterEach(async () => {
 describe('Fix 7: PIN is hashed, per-site, and locks out', () => {
   it('does not store the PIN in plain text', async () => {
     const { site } = await createOwnedSite();
-    const stored = (await getDb()).sites.find((s) => s.id === site.id);
-    expect(stored.guardPin).toBeUndefined();
-    expect(stored.guardPinHash).toMatch(/^scrypt\$/);
+    const stored = (await getDb()).people.find((p) => p.role === 'guard');
+    expect(stored.pin).toBeUndefined();
+    expect(stored.pinHash).toMatch(/^scrypt\$/);
+    expect(site.guardPin).toMatch(/^\d{6}$/);
   });
 
-  it('issues a six digit PIN to a new site', async () => {
+  it('issues a six digit PIN to a new gate man', async () => {
     const { site } = await createOwnedSite();
     expect(site.guardPin).toMatch(/^\d{6}$/);
   });

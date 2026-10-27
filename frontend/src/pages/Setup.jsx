@@ -14,7 +14,16 @@ function copy(text) {
 export default function Setup({ t, lang }) {
   const { siteId } = useParams();
   const nav = useNavigate();
-  const [form, setForm] = useState({ name: '', ownerName: '', ownerEmail: '', pack: 'manufacturing', countryIso: 'SA', timezone: 'Asia/Riyadh' });
+  const [form, setForm] = useState({
+    companyName: '',
+    gateName: '',
+    ownerName: '',
+    ownerEmail: '',
+    password: '',
+    pack: 'manufacturing',
+    countryIso: 'SA',
+    timezone: 'Asia/Riyadh',
+  });
   const [site, setSite] = useState(null);
   const [people, setPeople] = useState([]);
   const [person, setPerson] = useState({ name: '', role: 'employee', phone: '', email: '', managerId: '', employeeId: '' });
@@ -22,7 +31,8 @@ export default function Setup({ t, lang }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [toast, setToast] = useState('');
-  const [shownPin, setShownPin] = useState('');
+  const [csvResult, setCsvResult] = useState(null);
+  const [csvBusy, setCsvBusy] = useState(false);
 
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const boothUrl = site ? `${origin}/booth/${site.slug || site.id}` : '';
@@ -33,8 +43,9 @@ export default function Setup({ t, lang }) {
     api.snapshot(siteId, lang).then((d) => {
       setSite(d.site);
       setPeople(d.people || []);
-    }).catch(() => {
-      setErr('site_not_found');
+    }).catch((fail) => {
+      if (fail.status === 401) nav('/login', { replace: true });
+      else setErr('site_not_found');
     });
   }, [siteId, lang]);
 
@@ -47,18 +58,37 @@ export default function Setup({ t, lang }) {
   async function create(e) {
     e.preventDefault();
     setErr('');
-    if (!form.name.trim()) {
+    if (!form.companyName.trim() || !form.gateName.trim()) {
       setErr('name');
+      return;
+    }
+    if (!form.ownerEmail.trim()) {
+      setErr('email');
+      return;
+    }
+    if (String(form.password || '').length < 8) {
+      setErr('password');
       return;
     }
     setBusy(true);
     try {
-      const d = await api.createSite({ ...form, lang, countryIso: form.countryIso, timezone: form.timezone });
-      setSite(d.site);
-      setShownPin(d.site?.guardPin || '');
-      nav(`/setup/${d.site.slug}`, { replace: true });
-    } catch {
-      setErr('fail');
+      await api.signup({
+        companyName: form.companyName,
+        gateName: form.gateName,
+        ownerName: form.ownerName,
+        ownerEmail: form.ownerEmail,
+        password: form.password,
+        lang,
+        pack: form.pack,
+        countryIso: form.countryIso,
+        timezone: form.timezone,
+      });
+      nav('/home', { replace: true });
+    } catch (fail) {
+      const code = fail.body?.error;
+      if (code === 'email_taken') setErr('email_taken');
+      else if (code === 'password_short') setErr('password');
+      else setErr('fail');
     } finally {
       setBusy(false);
     }
@@ -110,11 +140,16 @@ export default function Setup({ t, lang }) {
         <h1>{t.createSite}</h1>
         <p className="lede">{t.setupIntro}</p>
         <form className="card setup-card" onSubmit={create}>
-          <label htmlFor="sn">
-            {t.siteName}
+          <label htmlFor="cn">
+            {t.companyName}
             <span className="req">*</span>
           </label>
-          <input id="sn" value={form.name} placeholder={t.sitePh} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <input id="cn" value={form.companyName} onChange={(e) => setForm({ ...form, companyName: e.target.value })} />
+          <label htmlFor="sn">
+            {t.gateName}
+            <span className="req">*</span>
+          </label>
+          <input id="sn" value={form.gateName} placeholder={t.sitePh} onChange={(e) => setForm({ ...form, gateName: e.target.value })} />
           {err === 'name' && <div className="field-err">{t.required}</div>}
           <label>{t.siteType}</label>
           <div className="pack-grid">
@@ -146,9 +181,15 @@ export default function Setup({ t, lang }) {
           <input id="on" value={form.ownerName} onChange={(e) => setForm({ ...form, ownerName: e.target.value })} />
           <label htmlFor="oe">{t.ownerEmail}</label>
           <input id="oe" type="email" autoComplete="email" value={form.ownerEmail} onChange={(e) => setForm({ ...form, ownerEmail: e.target.value })} />
+          {err === 'email' && <div className="field-err">{t.required}</div>}
+          {err === 'email_taken' && <div className="field-err">{t.emailTaken}</div>}
+          <label htmlFor="pw">{t.password}</label>
+          <input id="pw" type="password" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          {err === 'password' && <div className="field-err">{t.passwordShort}</div>}
+          {err === 'fail' && <div className="field-err">{t.signupFail}</div>}
           <div className="cta-row">
             <button className="btn" type="submit" disabled={busy}>
-              {busy ? t.sending : t.createSite}
+              {busy ? t.sending : t.signUp}
             </button>
           </div>
         </form>
@@ -165,9 +206,13 @@ export default function Setup({ t, lang }) {
         <article className="card">
           <h3>{site.name}</h3>
           <p className="muted">{packLabel(site.pack, lang)}</p>
-          <label>{t.guardPin}</label>
-           <div className="token-xl">{shownPin || '····'}</div>
-          {shownPin && <p className="muted">{t.newPinOnce}</p>}
+          {shownGuardPin && (
+            <>
+              <label>{t.guardPin}</label>
+              <div className="token-xl">{shownGuardPin}</div>
+              <p className="muted">{t.newPinOnce}</p>
+            </>
+          )}
           <p className="muted">{t.session2Note}</p>
           <label htmlFor="stz">{t.timezone}</label>
           <select
@@ -187,23 +232,9 @@ export default function Setup({ t, lang }) {
               <option key={tz} value={tz}>{tz}</option>
             ))}
           </select>
-          <div className="cta-row">
-            <button
-              type="button"
-              className="ghost"
-              onClick={async () => {
-                try {
-                  const d = await api.resetPin(site.slug || site.id);
-                  setShownPin(d.pin);
-                  setToast(t.newPinOnce);
-                } catch {
-                  setToast(t.required);
-                }
-              }}
-            >
-              {t.resetPin}
-            </button>
-          </div>
+          <p className="muted">
+            <Link to="/home">{t.companyHome}</Link>
+          </p>
           <label>{t.guardLink}</label>
           <input readOnly value={boothUrl} />
           <div className="cta-row">
@@ -238,6 +269,71 @@ export default function Setup({ t, lang }) {
 
       <section style={{ marginTop: 20 }}>
         <h2>{t.people}</h2>
+        <article className="card">
+          <p className="muted">{t.csvHint}</p>
+          <div className="cta-row">
+            <button
+              type="button"
+              className="ghost"
+              onClick={async () => {
+                try {
+                  const blob = await api.downloadPeopleSample(site.slug || site.id);
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'gate-daftar-people-sample.csv';
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } catch {
+                  setToast(t.required);
+                }
+              }}
+            >
+              {t.downloadSample}
+            </button>
+            <label className="ghost" style={{ display: 'inline-grid', placeItems: 'center', cursor: 'pointer' }}>
+              {csvBusy ? t.sending : t.uploadCsv}
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                hidden
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (!file) return;
+                  setCsvBusy(true);
+                  setCsvResult(null);
+                  try {
+                    const text = await file.text();
+                    const d = await api.importPeople(site.slug || site.id, text);
+                    setCsvResult(d);
+                    const snap = await api.snapshot(site.slug || site.id, lang);
+                    setPeople(snap.people || []);
+                  } catch {
+                    setCsvResult({ error: true });
+                  } finally {
+                    setCsvBusy(false);
+                  }
+                }}
+              />
+            </label>
+          </div>
+          {csvResult?.error && <div className="field-err">{t.csvInvalid}</div>}
+          {csvResult && !csvResult.error && (
+            <p className="muted">
+              {t.csvAdded}: {csvResult.added} · {t.csvUpdated}: {csvResult.updated} · {t.csvSkipped}: {csvResult.skipped?.length || 0}
+            </p>
+          )}
+          {csvResult?.skipped?.length > 0 && (
+            <ul>
+              {csvResult.skipped.map((s) => (
+                <li key={`${s.line}-${s.name}`} className="muted">
+                  {s.line}: {s.name} · {t[`csv_${s.reason}`] || s.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+        </article>
         <form className="card" onSubmit={addPerson}>
           <div className="grid-2">
             <div>

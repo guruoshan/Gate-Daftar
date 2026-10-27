@@ -9,7 +9,7 @@ export default function Landing({ t }) {
         <p className="lede">{t.sub}</p>
         <div className="cta-row">
           <Link className="btn" to="/setup" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
-            {t.createSite}
+            {t.signUp}
           </Link>
           <Link className="ghost" to="/booth/demo" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
             {t.openDemo}

@@ -82,7 +82,7 @@ describe('Session 2: company email approval and roster-only out-pass', () => {
     const added = await request(app)
       .post(`/api/sites/${site.slug}/people`)
       .set('Cookie', cookie)
-      .send({ name: 'Guard Ali', role: 'guard', phone: '966500000001', employeeId: 'G-01' });
+      .send({ name: 'Guard Ali', role: 'guard', phone: '966500000001', employeeId: 'G-02' });
     expect(added.status).toBe(200);
     expect(added.body.pin).toMatch(/^\d{6}$/);
     const unlock = await request(app)

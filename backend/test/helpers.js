@@ -7,6 +7,7 @@ import { resetPinState } from '../src/pins.js';
 import { lastMail, resetMail } from '../src/mailer.js';
 
 export async function resetAll() {
+  ownerSeq = 0;
   await resetStore();
   await resetSessions();
   resetRateLimits();
@@ -21,19 +22,60 @@ export function cookieFrom(res) {
   return list.map((c) => String(c).split(';')[0]).join('; ');
 }
 
-export async function createOwnedSite(name = 'Test Gate') {
-  const res = await request(app).post('/api/sites').send({
-    name,
-    ownerName: 'Test Owner',
-    ownerEmail: 'owner@example.com',
-    lang: 'en',
-    pack: 'warehouse',
-    countryIso: 'SA',
+let ownerSeq = 0;
+
+export async function signupCompany(overrides = {}) {
+  ownerSeq += 1;
+  const email = overrides.ownerEmail || overrides.email || `owner${ownerSeq}@example.com`;
+  const res = await request(app).post('/api/owner/signup').send({
+    companyName: overrides.companyName || overrides.name || 'Test Co',
+    gateName: overrides.gateName || overrides.name || 'Main Gate',
+    ownerName: overrides.ownerName || 'Test Owner',
+    ownerEmail: email,
+    password: overrides.password || 'password1',
+    lang: overrides.lang || 'en',
+    pack: overrides.pack || 'warehouse',
+    countryIso: overrides.countryIso || 'SA',
+    timezone: overrides.timezone,
   });
   return {
     res,
+    company: res.body.company,
     site: res.body.site,
     cookie: cookieFrom(res),
+    email,
+    password: overrides.password || 'password1',
+  };
+}
+
+export async function addNamedGuard(cookie, slug, name = 'Guard Ali') {
+  const res = await request(app)
+    .post(`/api/sites/${slug}/people`)
+    .set('Cookie', cookie)
+    .send({ name, role: 'guard', employeeId: 'G-01' });
+  return { res, person: res.body.person, pin: res.body.pin };
+}
+
+export async function createOwnedSite(name = 'Test Gate', extra = {}) {
+  const signed = await signupCompany({
+    companyName: name,
+    gateName: name,
+    ownerEmail: extra.ownerEmail || extra.email,
+    password: extra.password,
+    ...extra,
+  });
+  let guardPin = '';
+  if (signed.cookie && signed.site?.slug) {
+    const guard = await addNamedGuard(signed.cookie, signed.site.slug);
+    guardPin = guard.pin || '';
+  }
+  return {
+    res: signed.res,
+    company: signed.company,
+    site: signed.site ? { ...signed.site, guardPin } : signed.site,
+    cookie: signed.cookie,
+    email: signed.email,
+    password: signed.password,
   };
 }
 

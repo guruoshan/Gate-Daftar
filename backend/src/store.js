@@ -4,7 +4,7 @@ import { id, shortCode, now } from './ids.js';
 import { countryOf, normalizePhone, digits } from './countries.js';
 import { normalizeArabicText } from './text.js';
 import { timezoneForCountry, isValidTimeZone, dayBounds, todayLocalDate } from './time.js';
-import { hashPin, generatePin, verifyPin } from './pins.js';
+import { hashPin, hashPassword, generatePin, verifyPin } from './pins.js';
 import { PACKS, coercePack } from './packs.js';
 import { newMagicToken, hashToken, tokenExpiry } from './tokens.js';
 import { auditBase, hashAudit } from './audit.js';
@@ -18,6 +18,7 @@ import {
   startListener,
 } from './db.js';
 import { importLegacyIfEmpty } from './boot.js';
+import { parseCsv } from './csv.js';
 
 const bus = new EventEmitter();
 bus.setMaxListeners(400);
@@ -60,6 +61,7 @@ const HIDDEN_KEYS = [
   'ownerName',
   'pinHash',
   'email',
+  'passwordHash',
 ];
 
 function withoutHidden(value) {
@@ -280,11 +282,16 @@ function emitEntry(entry) {
 }
 
 async function emitPeople(siteId) {
-  emitSite(siteId, 'delta', {
-    entity: 'people',
-    op: 'replace',
-    people: (await listPeople(siteId)).map(redactPerson),
-  });
+  const site = await getSite(siteId);
+  const people = (await listPeople(siteId)).map(redactPerson);
+  const sites = site?.companyId ? await listSitesByCompany(site.companyId) : [{ id: siteId }];
+  for (const s of sites) {
+    emitSite(s.id, 'delta', {
+      entity: 'people',
+      op: 'replace',
+      people,
+    });
+  }
 }
 
 let listenerReady = false;
@@ -350,10 +357,34 @@ export async function getCompany(companyId) {
   return rows[0] ? camelize(rows[0]) : null;
 }
 
+export async function getUserByEmail(email) {
+  const clean = String(email || '').trim().toLowerCase();
+  if (!clean) return null;
+  const { rows } = await query('SELECT * FROM users WHERE lower(email) = $1 LIMIT 1', [clean]);
+  return rows[0] ? camelize(rows[0]) : null;
+}
+
+export function publicCompany(company) {
+  if (!company) return null;
+  return {
+    id: company.id,
+    name: company.name,
+    countryIso: company.countryIso || 'SA',
+  };
+}
+
+export async function listSitesByCompany(companyId) {
+  if (!companyId) return [];
+  const { rows } = await query('SELECT * FROM sites WHERE company_id = $1 ORDER BY created_at ASC', [companyId]);
+  return rows.map(mapSite);
+}
+
 export async function listPeople(siteId) {
+  const site = await getSite(siteId);
+  if (!site?.companyId) return [];
   const { rows } = await query(
-    'SELECT * FROM people WHERE site_id = $1 AND active IS NOT FALSE ORDER BY created_at ASC',
-    [siteId],
+    'SELECT * FROM people WHERE company_id = $1 AND active IS NOT FALSE ORDER BY created_at ASC',
+    [site.companyId],
   );
   return rows.map(camelize);
 }
@@ -542,29 +573,52 @@ async function uniqueDayToken(siteId) {
   return shortCode(5);
 }
 
-export async function createSite({ name, ownerName, ownerEmail, lang = 'ar', pack, countryIso = 'SA', emailDomains, timezone }) {
+export async function createCompany({
+  companyName,
+  gateName,
+  name,
+  ownerName,
+  ownerEmail,
+  password,
+  lang = 'ar',
+  pack,
+  countryIso = 'SA',
+  emailDomains,
+  timezone,
+}) {
+  const email = String(ownerEmail || '').trim().toLowerCase();
+  if (email && (await getUserByEmail(email))) return { error: 'email_taken' };
   const company = {
     id: id('co_'),
-    name: String(name || 'Company').trim(),
+    name: String(companyName || name || 'Company').trim(),
     countryIso: countryOf(countryIso).iso,
-    emailDomains: domainsFromOwner(ownerEmail, emailDomains),
+    emailDomains: domainsFromOwner(email, emailDomains),
     createdAt: now(),
   };
-  const pin = generatePin();
   const site = {
     id: id('site_'),
     companyId: company.id,
     slug: `gd-${shortCode(6).toLowerCase()}`,
-    name: company.name,
+    name: String(gateName || name || company.name).trim(),
     pack: coercePack(pack),
     ownerName: ownerName || '',
-    ownerEmail: ownerEmail || '',
+    ownerEmail: email,
     lang: lang === 'en' ? 'en' : 'ar',
     countryIso: company.countryIso,
     timezone: isValidTimeZone(timezone) ? timezone : timezoneForCountry(company.countryIso),
-    guardPinHash: hashPin(pin),
+    guardPinHash: '',
     createdAt: now(),
   };
+  const user = email
+    ? {
+        id: id('u_'),
+        companyId: company.id,
+        email,
+        role: 'owner',
+        passwordHash: password ? hashPassword(password) : '',
+        createdAt: now(),
+      }
+    : null;
   await withTransaction(async (client) => {
     await insertRow(
       'companies',
@@ -591,11 +645,11 @@ export async function createSite({ name, ownerName, ownerEmail, lang = 'ar', pac
       site,
       client,
     );
-    if (site.ownerEmail) {
+    if (user) {
       await insertRow(
         'users',
-        ['id', 'companyId', 'email', 'role', 'createdAt'],
-        { id: id('u_'), companyId: company.id, email: site.ownerEmail, role: 'owner', createdAt: now() },
+        ['id', 'companyId', 'email', 'role', 'passwordHash', 'createdAt'],
+        user,
         client,
       );
     }
@@ -605,7 +659,58 @@ export async function createSite({ name, ownerName, ownerEmail, lang = 'ar', pac
     action: 'site_created',
     actor: { role: 'owner', name: ownerName || 'owner' },
   });
-  return { site, pin };
+  return { company, site, user };
+}
+
+export async function createSite(input) {
+  return createCompany(input);
+}
+
+export async function addSite(companyId, { name, pack, lang, countryIso, timezone }, meta = {}) {
+  const company = await getCompany(companyId);
+  if (!company) return { error: 'not_found' };
+  const sites = await listSitesByCompany(companyId);
+  const first = sites[0];
+  const site = {
+    id: id('site_'),
+    companyId,
+    slug: `gd-${shortCode(6).toLowerCase()}`,
+    name: String(name || '').trim() || company.name,
+    pack: coercePack(pack || first?.pack),
+    ownerName: first?.ownerName || meta.actor?.name || '',
+    ownerEmail: first?.ownerEmail || '',
+    lang: lang === 'en' || first?.lang === 'en' ? 'en' : 'ar',
+    countryIso: countryOf(countryIso || first?.countryIso || company.countryIso).iso,
+    timezone: isValidTimeZone(timezone)
+      ? timezone
+      : first?.timezone || timezoneForCountry(company.countryIso),
+    guardPinHash: '',
+    createdAt: now(),
+  };
+  await insertRow(
+    'sites',
+    [
+      'id',
+      'companyId',
+      'slug',
+      'name',
+      'pack',
+      'ownerName',
+      'ownerEmail',
+      'lang',
+      'countryIso',
+      'timezone',
+      'guardPinHash',
+      'createdAt',
+    ],
+    site,
+  );
+  await writeAudit({
+    siteId: site.id,
+    action: 'site_created',
+    actor: meta.actor || { role: 'owner', name: site.ownerName || 'owner' },
+  });
+  return { site };
 }
 
 export async function updateSiteTimezone(siteId, timezone, meta = {}) {
@@ -651,6 +756,14 @@ export async function addPerson(siteId, { name, role, phone, email, managerPhone
     shownPin = pin ? String(pin) : generatePin();
     pinHash = hashPin(shownPin);
   }
+  const empId = String(employeeId || '').trim();
+  if (empId && site?.companyId) {
+    const { rows } = await query(
+      'SELECT id FROM people WHERE company_id = $1 AND employee_id = $2 AND active IS NOT FALSE LIMIT 1',
+      [site.companyId, empId],
+    );
+    if (rows[0]) return { error: 'employee_id_taken' };
+  }
   const person = {
     id: id('p_'),
     siteId,
@@ -661,7 +774,7 @@ export async function addPerson(siteId, { name, role, phone, email, managerPhone
     email: cleanEmail,
     managerPhone: m.e164 || '',
     managerId: String(managerId || '').trim(),
-    employeeId: String(employeeId || '').trim(),
+    employeeId: empId,
     pinHash,
     active: true,
     createdAt: now(),
@@ -670,6 +783,306 @@ export async function addPerson(siteId, { name, role, phone, email, managerPhone
   await note(siteId, 'person_added', `${person.name} added`, { personId: person.id }, meta.actor, meta.ip, meta.device);
   await emitPeople(siteId);
   return { person, pin: shownPin };
+}
+
+function namesEqual(a, b) {
+  return normalizeArabicText(a) === normalizeArabicText(b);
+}
+
+const personAddKeys = [
+  'id',
+  'siteId',
+  'companyId',
+  'name',
+  'employeeId',
+  'managerId',
+  'status',
+  'source',
+  'magicTokenHash',
+  'magicTokenExpiresAt',
+  'magicTokenUsedAt',
+  'denyReason',
+  'actorName',
+  'createdAt',
+  'decidedAt',
+];
+
+function mapPersonAdd(row) {
+  return row ? camelize(row) : null;
+}
+
+export function publicPersonAdd(request) {
+  if (!request) return null;
+  return {
+    id: request.id,
+    name: request.name,
+    employeeId: request.employeeId || '',
+    status: request.status,
+    denyReason: request.denyReason || '',
+    decidedAt: request.decidedAt || null,
+    requestedAt: request.createdAt,
+  };
+}
+
+export async function createPersonAdd({ siteId, name, employeeId, managerId, source }, meta = {}) {
+  const site = await getSite(siteId);
+  if (!site) return { error: 'not_found' };
+  const company = await getCompany(site.companyId);
+  const cleanName = String(name || '').trim();
+  if (!cleanName) return { error: 'name_required' };
+  const people = await listPeople(siteId);
+  const managers = people.filter((p) => p.role === 'manager');
+  if (!managers.length) return { error: 'manager_required' };
+  const manager = managers.find((p) => p.id === String(managerId || ''));
+  if (!manager || !manager.email || !emailAllowed(company, manager.email)) {
+    return { error: 'manager_required' };
+  }
+  const empId = String(employeeId || '').trim();
+  if (empId) {
+    if (people.some((p) => p.employeeId === empId)) return { error: 'already_on_list' };
+  } else {
+    const hits = people.filter((p) => p.role === 'employee' && namesEqual(p.name, cleanName));
+    if (hits.length === 1) return { error: 'already_on_list' };
+  }
+  const magicToken = newMagicToken();
+  const expires = tokenExpiry();
+  const request = {
+    id: id('pa_'),
+    siteId: site.id,
+    companyId: site.companyId,
+    name: cleanName,
+    employeeId: empId,
+    managerId: manager.id,
+    status: 'waiting',
+    source: source === 'qr' ? 'qr' : 'guard',
+    magicTokenHash: hashToken(magicToken),
+    magicTokenExpiresAt: expires,
+    magicTokenUsedAt: null,
+    denyReason: '',
+    actorName: meta.actor?.name || '',
+    createdAt: now(),
+    decidedAt: null,
+  };
+  await insertRow('person_add_requests', personAddKeys, request);
+  await note(
+    site.id,
+    'person_add_requested',
+    `${request.name} add requested`,
+    {},
+    meta.actor,
+    meta.ip,
+    meta.device,
+  );
+  return { request, magicToken, manager };
+}
+
+export async function getPersonAddByToken(magicToken) {
+  const want = hashToken(magicToken);
+  if (!want) return null;
+  const { rows } = await query('SELECT * FROM person_add_requests WHERE magic_token_hash = $1 LIMIT 1', [want]);
+  return mapPersonAdd(rows[0]);
+}
+
+export async function decidePersonAdd(magicToken, decision, denyReason = '', meta = {}) {
+  const request = await getPersonAddByToken(magicToken);
+  if (!request) return { error: 'not_found' };
+  if (isMagicTokenExpired(request) && request.status === 'waiting') return { error: 'token_expired' };
+  const ok = decision === 'approve';
+  if (request.status !== 'waiting') {
+    if (ok && request.status === 'approved') return { request };
+    if (!ok && request.status === 'denied') return { request };
+    return { error: 'invalid_state', request };
+  }
+  const usedAt = now();
+  const decidedAt = now();
+  if (!ok) {
+    await query(
+      'UPDATE person_add_requests SET status=$1, magic_token_used_at=$2, decided_at=$3, deny_reason=$4 WHERE id=$5',
+      ['denied', usedAt, decidedAt, String(denyReason || '').trim(), request.id],
+    );
+    Object.assign(request, { status: 'denied', magicTokenUsedAt: usedAt, decidedAt, denyReason: String(denyReason || '').trim() });
+    await writeAudit({
+      siteId: request.siteId,
+      action: 'person_add_denied',
+      actor: meta.actor,
+      ip: meta.ip,
+      device: meta.device,
+      reason: request.name,
+    });
+    return { request };
+  }
+  const added = await addPerson(
+    request.siteId,
+    {
+      name: request.name,
+      role: 'employee',
+      employeeId: request.employeeId,
+      managerId: request.managerId,
+    },
+    meta,
+  );
+  if (added.error && added.error !== 'employee_id_taken') return added;
+  await query(
+    'UPDATE person_add_requests SET status=$1, magic_token_used_at=$2, decided_at=$3, deny_reason=$4 WHERE id=$5',
+    ['approved', usedAt, decidedAt, '', request.id],
+  );
+  Object.assign(request, { status: 'approved', magicTokenUsedAt: usedAt, decidedAt, denyReason: '' });
+  await writeAudit({
+    siteId: request.siteId,
+    action: 'person_add_approved',
+    actor: meta.actor,
+    ip: meta.ip,
+    device: meta.device,
+    reason: request.name,
+  });
+  if (!added.error) await emitPeople(request.siteId);
+  return { request, person: added.person || null };
+}
+
+function csvHeaderKey(raw) {
+  return String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, ' ');
+}
+
+function csvRole(raw) {
+  const v = normalizeArabicText(raw);
+  if (v === 'manager' || v === 'مدير') return 'manager';
+  if (v === 'employee' || v === 'موظف') return 'employee';
+  return '';
+}
+
+function matchCompanyPerson(people, empId, name) {
+  if (empId) {
+    const hits = people.filter((p) => p.employeeId === empId);
+    if (hits.length > 1) return { error: 'employee_id_taken' };
+    if (hits.length === 1) return { person: hits[0] };
+    return { person: null };
+  }
+  const hits = people.filter((p) => namesEqual(p.name, name));
+  if (hits.length > 1) return { error: 'name_ambiguous' };
+  if (hits.length === 1) return { person: hits[0] };
+  return { person: null };
+}
+
+async function applyPersonRow(site, company, people, row, meta) {
+  const skip = (reason) => ({ skipped: true, reason, name: row.name });
+  if (!row.role) return skip('role_invalid');
+  if (!row.name) return skip('name_required');
+  if (row.role === 'manager') {
+    if (!row.email) return skip('email_required');
+    if (!emailAllowed(company, row.email)) return skip('email_domain_not_allowed');
+  } else if (row.email && !emailAllowed(company, row.email)) {
+    return skip('email_domain_not_allowed');
+  }
+  let phone = '';
+  if (row.phone) {
+    const parsed = phoneForSite(site, row.phone);
+    if (parsed.error) return skip('phone_invalid');
+    phone = parsed.e164 || '';
+  }
+  let managerId = '';
+  if (row.role === 'employee') {
+    const managerName = row.managerName;
+    if (!managerName) return skip('manager_not_found');
+    const hits = people.filter((p) => p.role === 'manager' && namesEqual(p.name, managerName));
+    if (!hits.length) return skip('manager_not_found');
+    if (hits.length > 1) return skip('manager_name_ambiguous');
+    managerId = hits[0].id;
+  }
+  const found = matchCompanyPerson(people, row.employeeId, row.name);
+  if (found.error) return skip(found.error);
+  if (found.person) {
+    if (found.person.role === 'guard') return skip('guard_skip');
+    await query('UPDATE people SET name = $1, email = $2, phone = $3, manager_id = $4 WHERE id = $5', [
+      row.name,
+      row.email || found.person.email || '',
+      phone || found.person.phone || '',
+      row.role === 'employee' ? managerId : found.person.managerId || '',
+      found.person.id,
+    ]);
+    return { updated: true, name: row.name };
+  }
+  const added = await addPerson(
+    site.id,
+    {
+      name: row.name,
+      role: row.role,
+      email: row.email,
+      phone,
+      employeeId: row.employeeId,
+      managerId,
+    },
+    meta,
+  );
+  if (added.error === 'employee_id_taken') return skip('employee_id_taken');
+  if (added.error === 'email_required') return skip('email_required');
+  if (added.error === 'email_domain_not_allowed') return skip('email_domain_not_allowed');
+  if (added.error) return skip(added.error);
+  return { added: true, name: row.name };
+}
+
+export async function importPeopleCsv(siteId, text, meta = {}) {
+  const site = await getSite(siteId);
+  if (!site) return { error: 'not_found' };
+  const company = await getCompany(site.companyId);
+  const parsed = parseCsv(text);
+  if (!parsed.headers.length) return { error: 'csv_invalid' };
+  const keys = parsed.headers.map(csvHeaderKey);
+  const col = (aliases) => {
+    const i = keys.findIndex((h) => aliases.includes(h));
+    return i;
+  };
+  const idx = {
+    role: col(['role']),
+    name: col(['name']),
+    employeeId: col(['employee id', 'employeeid']),
+    email: col(['work email', 'email']),
+    phone: col(['phone']),
+    managerName: col(['manager name', 'managername']),
+  };
+  if (idx.role < 0 || idx.name < 0) return { error: 'csv_invalid' };
+  const records = parsed.rows.map((cells, i) => ({
+    line: i + 2,
+    role: csvRole(idx.role >= 0 ? cells[idx.role] : ''),
+    name: String(idx.name >= 0 ? cells[idx.name] || '' : '').trim(),
+    employeeId: String(idx.employeeId >= 0 ? cells[idx.employeeId] || '' : '').trim(),
+    email: String(idx.email >= 0 ? cells[idx.email] || '' : '').trim().toLowerCase(),
+    phone: String(idx.phone >= 0 ? cells[idx.phone] || '' : '').trim(),
+    managerName: String(idx.managerName >= 0 ? cells[idx.managerName] || '' : '').trim(),
+  }));
+  const managers = records.filter((r) => r.role === 'manager');
+  const employees = records.filter((r) => r.role !== 'manager');
+  const ordered = [...managers, ...employees];
+  const added = [];
+  const updated = [];
+  const skipped = [];
+  const seenIds = new Set();
+  for (const row of ordered) {
+    if (row.employeeId) {
+      if (seenIds.has(row.employeeId)) {
+        skipped.push({ line: row.line, name: row.name, reason: 'employee_id_taken' });
+        continue;
+      }
+      seenIds.add(row.employeeId);
+    }
+    const people = await listPeople(siteId);
+    const result = await applyPersonRow(site, company, people, row, meta);
+    if (result.skipped) skipped.push({ line: row.line, name: result.name, reason: result.reason });
+    else if (result.added) added.push(row.name);
+    else if (result.updated) updated.push(row.name);
+  }
+  await emitPeople(siteId);
+  await writeAudit({
+    siteId,
+    action: 'people_csv_imported',
+    actor: meta.actor,
+    ip: meta.ip,
+    device: meta.device,
+    reason: `added=${added.length} updated=${updated.length} skipped=${skipped.length}`,
+  });
+  return { added: added.length, updated: updated.length, skipped };
 }
 
 export async function createVisitor(input, meta = {}) {
@@ -724,13 +1137,13 @@ export async function createOutPass(input, meta = {}) {
   const site = await getSite(input.siteId);
   const company = await getCompany(site?.companyId);
   const person = await getPerson(input.personId);
-  if (!person || person.siteId !== input.siteId || person.role === 'manager' || person.role === 'guard') {
+  if (!person || person.companyId !== site?.companyId || person.role === 'manager' || person.role === 'guard') {
     return { error: 'person_required' };
   }
   let manager = null;
   if (input.managerId) manager = await getPerson(input.managerId);
   if (!manager && person.managerId) manager = await getPerson(person.managerId);
-  if (!manager || manager.siteId !== input.siteId || manager.role !== 'manager' || !manager.email) {
+  if (!manager || manager.companyId !== site?.companyId || manager.role !== 'manager' || !manager.email) {
     return { error: 'manager_required' };
   }
   if (!emailAllowed(company, manager.email)) return { error: 'email_domain_not_allowed' };
@@ -839,8 +1252,9 @@ export async function findGuardByPin(siteId, pin) {
 }
 
 export async function resetGuardPersonPin(siteId, personId, meta = {}) {
+  const site = await getSite(siteId);
   const person = await getPerson(personId);
-  if (!person || person.siteId !== siteId || person.role !== 'guard') return { error: 'not_found' };
+  if (!person || !site || person.companyId !== site.companyId || person.role !== 'guard') return { error: 'not_found' };
   const pin = generatePin();
   await query('UPDATE people SET pin_hash = $1 WHERE id = $2', [hashPin(pin), person.id]);
   await writeAudit({ siteId, action: 'guard_pin_reset', actor: meta.actor, ip: meta.ip, device: meta.device, entryId: person.id });
@@ -1099,7 +1513,6 @@ export async function seedDemoIfEmpty() {
     emailDomains: 'example.com',
     createdAt: now(),
   };
-  const demoPin = process.env.DEMO_PIN || generatePin();
   const site = {
     id: 'site_demo',
     companyId: company.id,
@@ -1111,9 +1524,10 @@ export async function seedDemoIfEmpty() {
     lang: 'ar',
     countryIso: 'SA',
     timezone: 'Asia/Riyadh',
-    guardPinHash: hashPin(demoPin),
+    guardPinHash: '',
     createdAt: now(),
   };
+  const demoOwnerPassword = process.env.DEMO_OWNER_PASSWORD || generatePin() + generatePin();
   await withTransaction(async (client) => {
     await insertRow('companies', ['id', 'name', 'countryIso', 'emailDomains', 'createdAt'], company, client);
     await insertRow(
@@ -1122,14 +1536,28 @@ export async function seedDemoIfEmpty() {
       site,
       client,
     );
+    await insertRow(
+      'users',
+      ['id', 'companyId', 'email', 'role', 'passwordHash', 'createdAt'],
+      {
+        id: id('u_'),
+        companyId: company.id,
+        email: site.ownerEmail,
+        role: 'owner',
+        passwordHash: hashPassword(demoOwnerPassword),
+        createdAt: now(),
+      },
+      client,
+    );
   });
-  process.stdout.write(`gate-daftar demo booth PIN: ${demoPin}\n`);
+  process.stdout.write(`gate-daftar demo owner password: ${demoOwnerPassword}\n`);
   const khalid = await addPerson(site.id, { name: 'Khalid Al-Harbi', role: 'manager', phone: '966500111222', email: 'khalid@example.com', employeeId: 'M-01' }, { actor: { role: 'owner', name: 'Fahad' } });
   const noura = await addPerson(site.id, { name: 'Noura Al-Otaibi', role: 'manager', phone: '966500333444', email: 'noura@example.com', employeeId: 'M-02' }, { actor: { role: 'owner', name: 'Fahad' } });
   const yousef = await addPerson(site.id, { name: 'Yousef Hassan', role: 'employee', phone: '966511222333', managerId: khalid.person.id, employeeId: 'E-104' }, { actor: { role: 'owner', name: 'Fahad' } });
   const ahmed = await addPerson(site.id, { name: 'Ahmed Farouk', role: 'employee', phone: '966511444555', managerId: khalid.person.id, employeeId: 'E-118' }, { actor: { role: 'owner', name: 'Fahad' } });
   await addPerson(site.id, { name: 'Sami Al-Dosari', role: 'employee', phone: '966511666777', managerId: noura.person.id, employeeId: 'E-221' }, { actor: { role: 'owner', name: 'Fahad' } });
-  await addPerson(site.id, { name: 'Guard Ali', role: 'guard', phone: '966500000001', employeeId: 'G-01' }, { actor: { role: 'owner', name: 'Fahad' } });
+  const guardAli = await addPerson(site.id, { name: 'Guard Ali', role: 'guard', phone: '966500000001', employeeId: 'G-01' }, { actor: { role: 'owner', name: 'Fahad' } });
+  if (guardAli.pin) process.stdout.write(`gate-daftar demo booth PIN: ${guardAli.pin}\n`);
 
   await createVisitor({ siteId: site.id, name: 'Ibrahim Delivery', phone: '966555000111', company: 'Aramex', purpose: 'Parcel drop', hostName: 'Receiving', source: 'qr' }, { actor: { role: 'visitor', name: 'Ibrahim Delivery' } });
   await createVisitor({ siteId: site.id, name: 'Contractor Majed', phone: '966555222333', company: 'AC Fix Co', purpose: 'HVAC repair', hostName: 'Maintenance', source: 'guard' }, { actor: { role: 'guard', name: 'Booth' } });

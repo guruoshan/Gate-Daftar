@@ -10,12 +10,13 @@ beforeEach(async () => {
 
 describe('Fix 19 and 20: company access is enforced and the dead channel is gone', () => {
   it('an owner reaches every site in their own company', async () => {
-    const email = 'owner@example.com';
     const first = await createOwnedSite('First Gate');
-    const asked = await request(app).post('/api/owner/request-code').send({ email });
-    const verified = await request(app).post('/api/owner/verify').send({ email, code: asked.body.devCode });
-    const cookie = cookieFrom(verified);
-    const snap = await request(app).get(`/api/sites/${first.site.slug}/snapshot`).set('Cookie', cookie);
+    const added = await request(app)
+      .post(`/api/companies/${first.company.id}/sites`)
+      .set('Cookie', first.cookie)
+      .send({ name: 'Second Gate' });
+    expect(added.status).toBe(200);
+    const snap = await request(app).get(`/api/sites/${added.body.site.slug}/snapshot`).set('Cookie', first.cookie);
     expect(snap.status).toBe(200);
   });
 

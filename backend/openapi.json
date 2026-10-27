@@ -14,7 +14,22 @@
       "get": { "summary": "Supported countries", "responses": { "200": { "description": "Country list" } } }
     },
     "/sites": {
-      "post": { "summary": "Create a site", "responses": { "200": { "description": "Created" } } }
+      "post": { "summary": "Sign up a company and first gate", "responses": { "200": { "description": "Created" } } }
+    },
+    "/owner/signup": {
+      "post": { "summary": "Sign up a company and first gate", "responses": { "200": { "description": "Created" } } }
+    },
+    "/owner/login": {
+      "post": { "summary": "Owner login with email and password", "responses": { "200": { "description": "Logged in" }, "401": { "description": "Bad login" } } }
+    },
+    "/owner/logout": {
+      "post": { "summary": "Owner logout", "responses": { "200": { "description": "Logged out" } } }
+    },
+    "/owner/me": {
+      "get": { "summary": "Current owner company and gates", "responses": { "200": { "description": "Company" }, "401": { "description": "Not signed in" } } }
+    },
+    "/companies/{companyId}/sites": {
+      "post": { "summary": "Add a gate to the company", "parameters": [{ "name": "companyId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Created" } } }
     },
     "/sites/{siteId}": {
       "get": { "summary": "Public site details", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Site" } } }
@@ -34,12 +49,7 @@
     "/sites/{siteId}/timezone": {
       "post": { "summary": "Set the site timezone", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Updated" } } }
     },
-    "/owner/request-code": {
-      "post": { "summary": "Email an owner login code", "responses": { "200": { "description": "Sent" } } }
-    },
-    "/owner/verify": {
-      "post": { "summary": "Verify an owner login code", "responses": { "200": { "description": "Logged in" } } }
-    },
+
     "/sites/{siteId}/snapshot": {
       "get": { "summary": "Full site snapshot", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Snapshot" } } }
     },
@@ -49,6 +59,18 @@
     "/sites/{siteId}/people": {
       "get": { "summary": "List people", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "People" } } },
       "post": { "summary": "Add a person", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Created" } } }
+    },
+    "/sites/{siteId}/people/sample.csv": {
+      "get": { "summary": "Sample people CSV", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "CSV" } } }
+    },
+    "/sites/{siteId}/people/import": {
+      "post": { "summary": "Import people from CSV", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Imported" } } }
+    },
+    "/sites/{siteId}/people/request-add": {
+      "post": { "summary": "Request adding a person (booth)", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Requested" } } }
+    },
+    "/sites/{siteId}/gate/request-add": {
+      "post": { "summary": "Request adding a person (public QR)", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Requested" } } }
     },
     "/sites/{siteId}/visitors": {
       "post": { "summary": "Record a visitor", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Created" } } }
