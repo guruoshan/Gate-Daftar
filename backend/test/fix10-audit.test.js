@@ -46,6 +46,6 @@ describe('Fix 10: audit has real identity and a real hash chain', () => {
       .audit.filter((a) => a.action === 'outpass_requested')
       .pop();
     expect(entryAudit.actorRole).toBe('booth');
-    expect(entryAudit.actorName).toBe('Guard Ali');
+    expect(entryAudit.actorName).toBe(site.name);
   });
 });

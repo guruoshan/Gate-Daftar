@@ -49,7 +49,12 @@ describe('Fix 12: rate limits protect expensive and auth routes', () => {
   it('limits public gate submissions', async () => {
     process.env.RATE_LIMIT_GATE_MAX = '2';
     const created = await makeSite();
-    const slug = created.body.site.slug;
+    const cookie = created.headers['set-cookie'];
+    const added = await request(app)
+      .post(`/api/companies/${created.body.company.id}/sites`)
+      .set('Cookie', cookie)
+      .send({ name: 'Gate' });
+    const slug = added.body.site.slug;
     const send = () =>
       request(app).post(`/api/sites/${slug}/gate/visitor`).send({
         name: 'Ibrahim',
@@ -65,7 +70,12 @@ describe('Fix 12: rate limits protect expensive and auth routes', () => {
   it('limits unlock attempts', async () => {
     process.env.RATE_LIMIT_UNLOCK_MAX = '2';
     const created = await makeSite();
-    const slug = created.body.site.slug;
+    const cookie = created.headers['set-cookie'];
+    const added = await request(app)
+      .post(`/api/companies/${created.body.company.id}/sites`)
+      .set('Cookie', cookie)
+      .send({ name: 'Gate' });
+    const slug = added.body.site.slug;
     const tryUnlock = () => request(app).post('/api/guard/unlock').send({ slug, pin: '999999' });
     await tryUnlock();
     await tryUnlock();

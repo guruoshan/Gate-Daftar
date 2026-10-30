@@ -16,7 +16,6 @@ export default function Setup({ t, lang }) {
   const nav = useNavigate();
   const [form, setForm] = useState({
     companyName: '',
-    gateName: '',
     ownerName: '',
     ownerEmail: '',
     password: '',
@@ -58,7 +57,7 @@ export default function Setup({ t, lang }) {
   async function create(e) {
     e.preventDefault();
     setErr('');
-    if (!form.companyName.trim() || !form.gateName.trim()) {
+    if (!form.companyName.trim()) {
       setErr('name');
       return;
     }
@@ -74,7 +73,6 @@ export default function Setup({ t, lang }) {
     try {
       await api.signup({
         companyName: form.companyName,
-        gateName: form.gateName,
         ownerName: form.ownerName,
         ownerEmail: form.ownerEmail,
         password: form.password,
@@ -145,11 +143,6 @@ export default function Setup({ t, lang }) {
             <span className="req">*</span>
           </label>
           <input id="cn" value={form.companyName} onChange={(e) => setForm({ ...form, companyName: e.target.value })} />
-          <label htmlFor="sn">
-            {t.gateName}
-            <span className="req">*</span>
-          </label>
-          <input id="sn" value={form.gateName} placeholder={t.sitePh} onChange={(e) => setForm({ ...form, gateName: e.target.value })} />
           {err === 'name' && <div className="field-err">{t.required}</div>}
           <label>{t.siteType}</label>
           <div className="pack-grid">
@@ -348,7 +341,6 @@ export default function Setup({ t, lang }) {
               <select id="pr" value={person.role} onChange={(e) => setPerson({ ...person, role: e.target.value, email: '', managerId: '' })}>
                 <option value="employee">{t.employee}</option>
                 <option value="manager">{t.manager}</option>
-                <option value="guard">{t.guard}</option>
               </select>
             </div>
             <div>

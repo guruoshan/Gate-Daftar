@@ -29,7 +29,6 @@ export async function signupCompany(overrides = {}) {
   const email = overrides.ownerEmail || overrides.email || `owner${ownerSeq}@example.com`;
   const res = await request(app).post('/api/owner/signup').send({
     companyName: overrides.companyName || overrides.name || 'Test Co',
-    gateName: overrides.gateName || overrides.name || 'Main Gate',
     ownerName: overrides.ownerName || 'Test Owner',
     ownerEmail: email,
     password: overrides.password || 'password1',
@@ -41,7 +40,7 @@ export async function signupCompany(overrides = {}) {
   return {
     res,
     company: res.body.company,
-    site: res.body.site,
+    site: null,
     cookie: cookieFrom(res),
     email,
     password: overrides.password || 'password1',
@@ -58,21 +57,25 @@ export async function addNamedGuard(cookie, slug, name = 'Guard Ali') {
 
 export async function createOwnedSite(name = 'Test Gate', extra = {}) {
   const signed = await signupCompany({
-    companyName: name,
-    gateName: name,
+    companyName: extra.companyName || name,
     ownerEmail: extra.ownerEmail || extra.email,
     password: extra.password,
     ...extra,
   });
+  let site = null;
   let guardPin = '';
-  if (signed.cookie && signed.site?.slug) {
-    const guard = await addNamedGuard(signed.cookie, signed.site.slug);
-    guardPin = guard.pin || '';
+  if (signed.cookie && signed.company?.id) {
+    const added = await request(app)
+      .post(`/api/companies/${signed.company.id}/sites`)
+      .set('Cookie', signed.cookie)
+      .send({ name });
+    site = added.body.site ? { ...added.body.site, guardPin: added.body.pin || '' } : null;
+    guardPin = added.body.pin || '';
   }
   return {
     res: signed.res,
     company: signed.company,
-    site: signed.site ? { ...signed.site, guardPin } : signed.site,
+    site: site ? { ...site, guardPin } : site,
     cookie: signed.cookie,
     email: signed.email,
     password: signed.password,

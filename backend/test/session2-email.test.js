@@ -77,19 +77,13 @@ describe('Session 2: company email approval and roster-only out-pass', () => {
     expect(old.status).toBe(404);
   });
 
-  it('names the guard on the booth session when a personal PIN is used', async () => {
+  it('names the gate on the booth session when the gate PIN is used', async () => {
     const { site, cookie } = await createOwnedSite();
-    const added = await request(app)
-      .post(`/api/sites/${site.slug}/people`)
-      .set('Cookie', cookie)
-      .send({ name: 'Guard Ali', role: 'guard', phone: '966500000001', employeeId: 'G-02' });
-    expect(added.status).toBe(200);
-    expect(added.body.pin).toMatch(/^\d{6}$/);
     const unlock = await request(app)
       .post('/api/guard/unlock')
-      .send({ slug: site.slug, pin: added.body.pin, personId: added.body.person.id });
+      .send({ slug: site.slug, pin: site.guardPin });
     expect(unlock.status).toBe(200);
-    expect(unlock.body.guard.name).toBe('Guard Ali');
+    expect(unlock.body.guard.name).toBe(site.name);
     const roster = await seedRoster(cookie, site.slug);
     const requested = await request(app)
       .post(`/api/sites/${site.slug}/outpass`)
@@ -98,7 +92,7 @@ describe('Session 2: company email approval and roster-only out-pass', () => {
     expect(requested.status).toBe(200);
     const audit = await request(app).get(`/api/sites/${site.slug}/audit`).set('Cookie', cookie);
     const row = audit.body.audit.find((a) => a.action === 'outpass_requested');
-    expect(row.actorName).toBe('Guard Ali');
+    expect(row.actorName).toBe(site.name);
     expect(row.actorRole).toBe('booth');
   });
 

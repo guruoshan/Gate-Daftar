@@ -6,7 +6,7 @@ import { normalizeArabicText } from './text.js';
 import { timezoneForCountry, isValidTimeZone, dayBounds, todayLocalDate } from './time.js';
 import { hashPin, hashPassword, generatePin, verifyPin } from './pins.js';
 import { PACKS, coercePack } from './packs.js';
-import { newMagicToken, hashToken, tokenExpiry } from './tokens.js';
+import { newMagicToken, hashToken, tokenExpiry, isExpired } from './tokens.js';
 import { auditBase, hashAudit } from './audit.js';
 import { domainsFromOwner, emailAllowed } from './emails.js';
 import {
@@ -370,6 +370,7 @@ export function publicCompany(company) {
     id: company.id,
     name: company.name,
     countryIso: company.countryIso || 'SA',
+    pack: coercePack(company.pack),
   };
 }
 
@@ -575,7 +576,6 @@ async function uniqueDayToken(siteId) {
 
 export async function createCompany({
   companyName,
-  gateName,
   name,
   ownerName,
   ownerEmail,
@@ -593,20 +593,9 @@ export async function createCompany({
     name: String(companyName || name || 'Company').trim(),
     countryIso: countryOf(countryIso).iso,
     emailDomains: domainsFromOwner(email, emailDomains),
-    createdAt: now(),
-  };
-  const site = {
-    id: id('site_'),
-    companyId: company.id,
-    slug: `gd-${shortCode(6).toLowerCase()}`,
-    name: String(gateName || name || company.name).trim(),
     pack: coercePack(pack),
-    ownerName: ownerName || '',
-    ownerEmail: email,
     lang: lang === 'en' ? 'en' : 'ar',
-    countryIso: company.countryIso,
-    timezone: isValidTimeZone(timezone) ? timezone : timezoneForCountry(company.countryIso),
-    guardPinHash: '',
+    timezone: isValidTimeZone(timezone) ? timezone : timezoneForCountry(countryOf(countryIso).iso),
     createdAt: now(),
   };
   const user = email
@@ -622,27 +611,8 @@ export async function createCompany({
   await withTransaction(async (client) => {
     await insertRow(
       'companies',
-      ['id', 'name', 'countryIso', 'emailDomains', 'createdAt'],
+      ['id', 'name', 'countryIso', 'emailDomains', 'pack', 'lang', 'timezone', 'createdAt'],
       company,
-      client,
-    );
-    await insertRow(
-      'sites',
-      [
-        'id',
-        'companyId',
-        'slug',
-        'name',
-        'pack',
-        'ownerName',
-        'ownerEmail',
-        'lang',
-        'countryIso',
-        'timezone',
-        'guardPinHash',
-        'createdAt',
-      ],
-      site,
       client,
     );
     if (user) {
@@ -654,16 +624,23 @@ export async function createCompany({
       );
     }
   });
-  await writeAudit({
-    siteId: site.id,
-    action: 'site_created',
-    actor: { role: 'owner', name: ownerName || 'owner' },
-  });
-  return { company, site, user };
+  return { company, site: null, user };
 }
 
 export async function createSite(input) {
   return createCompany(input);
+}
+
+async function uniqueGatePin() {
+  for (let i = 0; i < 20; i += 1) {
+    const pin = generatePin();
+    const hash = hashPin(pin);
+    const { rows } = await query('SELECT id, guard_pin_hash FROM sites WHERE guard_pin_hash <> \'\'');
+    const clash = rows.some((row) => verifyPin(pin, row.guard_pin_hash));
+    if (!clash) return { pin, hash };
+  }
+  const pin = generatePin();
+  return { pin, hash: hashPin(pin) };
 }
 
 export async function addSite(companyId, { name, pack, lang, countryIso, timezone }, meta = {}) {
@@ -671,20 +648,21 @@ export async function addSite(companyId, { name, pack, lang, countryIso, timezon
   if (!company) return { error: 'not_found' };
   const sites = await listSitesByCompany(companyId);
   const first = sites[0];
+  const { pin, hash } = await uniqueGatePin();
   const site = {
     id: id('site_'),
     companyId,
     slug: `gd-${shortCode(6).toLowerCase()}`,
     name: String(name || '').trim() || company.name,
-    pack: coercePack(pack || first?.pack),
+    pack: coercePack(pack || first?.pack || company.pack),
     ownerName: first?.ownerName || meta.actor?.name || '',
     ownerEmail: first?.ownerEmail || '',
-    lang: lang === 'en' || first?.lang === 'en' ? 'en' : 'ar',
+    lang: lang === 'en' || first?.lang === 'en' || company.lang === 'en' ? 'en' : 'ar',
     countryIso: countryOf(countryIso || first?.countryIso || company.countryIso).iso,
     timezone: isValidTimeZone(timezone)
       ? timezone
-      : first?.timezone || timezoneForCountry(company.countryIso),
-    guardPinHash: '',
+      : first?.timezone || (isValidTimeZone(company.timezone) ? company.timezone : timezoneForCountry(company.countryIso)),
+    guardPinHash: hash,
     createdAt: now(),
   };
   await insertRow(
@@ -710,7 +688,7 @@ export async function addSite(companyId, { name, pack, lang, countryIso, timezon
     action: 'site_created',
     actor: meta.actor || { role: 'owner', name: site.ownerName || 'owner' },
   });
-  return { site };
+  return { site, pin };
 }
 
 export async function updateSiteTimezone(siteId, timezone, meta = {}) {
@@ -1251,6 +1229,67 @@ export async function findGuardByPin(siteId, pin) {
   return null;
 }
 
+export async function findSiteByPin(pin) {
+  const clean = String(pin || '');
+  if (!clean) return null;
+  const { rows } = await query('SELECT * FROM sites WHERE guard_pin_hash <> \'\' ORDER BY created_at ASC');
+  for (const row of rows) {
+    const site = mapSite(row);
+    if (verifyPin(clean, site.guardPinHash)) return site;
+  }
+  return null;
+}
+
+export async function verifySitePin(site, pin) {
+  if (!site?.guardPinHash) return false;
+  return verifyPin(String(pin || ''), site.guardPinHash);
+}
+
+function mapPasswordReset(row) {
+  return row ? camelize(row) : null;
+}
+
+export async function requestPasswordReset(email) {
+  const user = await getUserByEmail(email);
+  if (!user) return { ok: true };
+  const magicToken = newMagicToken();
+  const row = {
+    id: id('pr_'),
+    userId: user.id,
+    companyId: user.companyId,
+    magicTokenHash: hashToken(magicToken),
+    expiresAt: tokenExpiry(),
+    usedAt: null,
+    createdAt: now(),
+  };
+  await insertRow(
+    'password_reset_requests',
+    ['id', 'userId', 'companyId', 'magicTokenHash', 'expiresAt', 'usedAt', 'createdAt'],
+    row,
+  );
+  return { ok: true, magicToken, user };
+}
+
+export async function getPasswordResetByToken(raw) {
+  const want = hashToken(raw);
+  if (!want) return null;
+  const { rows } = await query(
+    'SELECT * FROM password_reset_requests WHERE magic_token_hash = $1 LIMIT 1',
+    [want],
+  );
+  return mapPasswordReset(rows[0]);
+}
+
+export async function completePasswordReset(raw, password) {
+  const row = await getPasswordResetByToken(raw);
+  if (!row) return { error: 'not_found' };
+  if (row.usedAt || isExpired(row.expiresAt)) return { error: 'token_expired' };
+  if (String(password || '').length < 8) return { error: 'password_short' };
+  await query('UPDATE users SET password_hash = $1 WHERE id = $2', [hashPassword(password), row.userId]);
+  await query('UPDATE password_reset_requests SET used_at = $1 WHERE id = $2', [now(), row.id]);
+  return { ok: true };
+}
+
 export async function resetGuardPersonPin(siteId, personId, meta = {}) {
   const site = await getSite(siteId);
   const person = await getPerson(personId);
@@ -1511,8 +1550,12 @@ export async function seedDemoIfEmpty() {
     name: 'Al-Noor Warehouse',
     countryIso: 'SA',
     emailDomains: 'example.com',
+    pack: 'warehouse',
+    lang: 'ar',
+    timezone: 'Asia/Riyadh',
     createdAt: now(),
   };
+  const demoGatePin = generatePin();
   const site = {
     id: 'site_demo',
     companyId: company.id,
@@ -1524,12 +1567,17 @@ export async function seedDemoIfEmpty() {
     lang: 'ar',
     countryIso: 'SA',
     timezone: 'Asia/Riyadh',
-    guardPinHash: '',
+    guardPinHash: hashPin(demoGatePin),
     createdAt: now(),
   };
   const demoOwnerPassword = process.env.DEMO_OWNER_PASSWORD || generatePin() + generatePin();
   await withTransaction(async (client) => {
-    await insertRow('companies', ['id', 'name', 'countryIso', 'emailDomains', 'createdAt'], company, client);
+    await insertRow(
+      'companies',
+      ['id', 'name', 'countryIso', 'emailDomains', 'pack', 'lang', 'timezone', 'createdAt'],
+      company,
+      client,
+    );
     await insertRow(
       'sites',
       ['id', 'companyId', 'slug', 'name', 'pack', 'ownerName', 'ownerEmail', 'lang', 'countryIso', 'timezone', 'guardPinHash', 'createdAt'],
@@ -1551,13 +1599,12 @@ export async function seedDemoIfEmpty() {
     );
   });
   process.stdout.write(`gate-daftar demo owner password: ${demoOwnerPassword}\n`);
+  process.stdout.write(`gate-daftar demo booth PIN: ${demoGatePin}\n`);
   const khalid = await addPerson(site.id, { name: 'Khalid Al-Harbi', role: 'manager', phone: '966500111222', email: 'khalid@example.com', employeeId: 'M-01' }, { actor: { role: 'owner', name: 'Fahad' } });
   const noura = await addPerson(site.id, { name: 'Noura Al-Otaibi', role: 'manager', phone: '966500333444', email: 'noura@example.com', employeeId: 'M-02' }, { actor: { role: 'owner', name: 'Fahad' } });
   const yousef = await addPerson(site.id, { name: 'Yousef Hassan', role: 'employee', phone: '966511222333', managerId: khalid.person.id, employeeId: 'E-104' }, { actor: { role: 'owner', name: 'Fahad' } });
   const ahmed = await addPerson(site.id, { name: 'Ahmed Farouk', role: 'employee', phone: '966511444555', managerId: khalid.person.id, employeeId: 'E-118' }, { actor: { role: 'owner', name: 'Fahad' } });
   await addPerson(site.id, { name: 'Sami Al-Dosari', role: 'employee', phone: '966511666777', managerId: noura.person.id, employeeId: 'E-221' }, { actor: { role: 'owner', name: 'Fahad' } });
-  const guardAli = await addPerson(site.id, { name: 'Guard Ali', role: 'guard', phone: '966500000001', employeeId: 'G-01' }, { actor: { role: 'owner', name: 'Fahad' } });
-  if (guardAli.pin) process.stdout.write(`gate-daftar demo booth PIN: ${guardAli.pin}\n`);
 
   await createVisitor({ siteId: site.id, name: 'Ibrahim Delivery', phone: '966555000111', company: 'Aramex', purpose: 'Parcel drop', hostName: 'Receiving', source: 'qr' }, { actor: { role: 'visitor', name: 'Ibrahim Delivery' } });
   await createVisitor({ siteId: site.id, name: 'Contractor Majed', phone: '966555222333', company: 'AC Fix Co', purpose: 'HVAC repair', hostName: 'Maintenance', source: 'guard' }, { actor: { role: 'guard', name: 'Booth' } });

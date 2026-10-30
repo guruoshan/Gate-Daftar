@@ -29,6 +29,10 @@ export const api = {
   unlock: (body) => req('/api/v1/guard/unlock', { method: 'POST', body: JSON.stringify(body) }),
   guards: (id) => req(`/api/v1/sites/${id}/guards`),
   resetPin: (id) => req(`/api/v1/sites/${id}/pin/reset`, { method: 'POST', body: '{}' }),
+  forgot: (email) => req('/api/v1/owner/forgot', { method: 'POST', body: JSON.stringify({ email }) }),
+  resetGet: (token) => req(`/api/v1/owner/reset/${token}`),
+  resetPost: (token, body) =>
+    req(`/api/v1/owner/reset/${token}`, { method: 'POST', body: JSON.stringify(body) }),
   setTimezone: (id, timezone) =>
     req(`/api/v1/sites/${id}/timezone`, { method: 'POST', body: JSON.stringify({ timezone }) }),
 

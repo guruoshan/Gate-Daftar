@@ -47,7 +47,7 @@ describe('Company walls', () => {
     expect(second.status).toBe(200);
   });
 
-  it('gate-man PIN of A unlocks A gates and not B', async () => {
+  it('gate PIN of A unlocks that gate and not B or a second gate', async () => {
     const a = await createOwnedSite('Main Gate', { ownerEmail: 'a@example.com' });
     const b = await createOwnedSite('Other Co', { ownerEmail: 'b@example.com' });
     const added = await request(app)
@@ -59,8 +59,10 @@ describe('Company walls', () => {
     const a2 = await unlockBooth(added.body.site.slug, pin);
     const other = await unlockBooth(b.site.slug, pin);
     expect(a1.res.status).toBe(200);
-    expect(a2.res.status).toBe(200);
+    expect(a2.res.status).toBe(401);
     expect(other.res.status).toBe(401);
+    const yard = await unlockBooth(added.body.site.slug, added.body.pin);
+    expect(yard.res.status).toBe(200);
   });
 
   it('approval token of A cannot decide B', async () => {

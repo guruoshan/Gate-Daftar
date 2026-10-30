@@ -196,23 +196,20 @@ export default function Gate({ t, lang, setLang }) {
             {t.notOnList}
           </button>
           {notOnList ? (
-            managers.length === 0 ? (
-              <p className="field-err">{t.noRoster}</p>
-            ) : (
               <>
                 <label htmlFor="an">{t.personName}<span className="req">*</span></label>
                 <input id="an" value={addForm.name} onChange={(e) => setAddForm({ ...addForm, name: e.target.value })} />
                 <label htmlFor="aid">{t.empId}</label>
                 <input id="aid" value={addForm.employeeId} onChange={(e) => setAddForm({ ...addForm, employeeId: e.target.value })} />
                 <label htmlFor="am">{t.selectManager}<span className="req">*</span></label>
-                <select id="am" value={addForm.managerId} onChange={(e) => setAddForm({ ...addForm, managerId: e.target.value })}>
+                <select id="am" value={addForm.managerId} onChange={(e) => setAddForm({ ...addForm, managerId: e.target.value })} disabled={managers.length === 0}>
                   <option value="">{t.selectManager}</option>
                   {managers.map((m) => (
                     <option key={m.id} value={m.id}>{m.name}</option>
                   ))}
                 </select>
+                {managers.length === 0 && <p className="field-err">{t.needManagerFirst}</p>}
               </>
-            )
           ) : employees.length === 0 ? (
             <p className="field-err">{t.noRoster}</p>
           ) : (

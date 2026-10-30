@@ -14,10 +14,10 @@
       "get": { "summary": "Supported countries", "responses": { "200": { "description": "Country list" } } }
     },
     "/sites": {
-      "post": { "summary": "Sign up a company and first gate", "responses": { "200": { "description": "Created" } } }
+      "post": { "summary": "Sign up a company (no gate)", "responses": { "200": { "description": "Created" } } }
     },
     "/owner/signup": {
-      "post": { "summary": "Sign up a company and first gate", "responses": { "200": { "description": "Created" } } }
+      "post": { "summary": "Sign up a company (no gate)", "responses": { "200": { "description": "Created" } } }
     },
     "/owner/login": {
       "post": { "summary": "Owner login with email and password", "responses": { "200": { "description": "Logged in" }, "401": { "description": "Bad login" } } }
@@ -28,8 +28,15 @@
     "/owner/me": {
       "get": { "summary": "Current owner company and gates", "responses": { "200": { "description": "Company" }, "401": { "description": "Not signed in" } } }
     },
+    "/owner/forgot": {
+      "post": { "summary": "Request a password reset email", "responses": { "200": { "description": "Always ok" } } }
+    },
+    "/owner/reset/{token}": {
+      "get": { "summary": "Check a password reset token", "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Valid" }, "404": { "description": "Unknown" }, "410": { "description": "Expired" } } },
+      "post": { "summary": "Set a new password", "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Reset" }, "400": { "description": "Bad password" }, "410": { "description": "Expired" } } }
+    },
     "/companies/{companyId}/sites": {
-      "post": { "summary": "Add a gate to the company", "parameters": [{ "name": "companyId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Created" } } }
+      "post": { "summary": "Add a gate; returns PIN once", "parameters": [{ "name": "companyId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Created" } } }
     },
     "/sites/{siteId}": {
       "get": { "summary": "Public site details", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Site" } } }
@@ -38,7 +45,7 @@
       "get": { "summary": "Minimal gate view", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Gate view" } } }
     },
     "/guard/unlock": {
-      "post": { "summary": "Unlock the booth with a PIN", "responses": { "200": { "description": "Unlocked" } } }
+      "post": { "summary": "Unlock the booth with a PIN; slug optional", "responses": { "200": { "description": "Unlocked" } } }
     },
     "/sites/{siteId}/guards": {
       "get": { "summary": "Named guards for the PIN pad", "parameters": [{ "name": "siteId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Guards" } } }

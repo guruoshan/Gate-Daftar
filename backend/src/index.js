@@ -43,8 +43,11 @@ import {
   redactPerson,
   redactAudit,
   resetGuardPin,
-  resetGuardPersonPin,
-  findGuardByPin,
+  findSiteByPin,
+  verifySitePin,
+  requestPasswordReset,
+  getPasswordResetByToken,
+  completePasswordReset,
   rotateOutPassToken,
   updateSiteTimezone,
   createPersonAdd,
@@ -70,7 +73,8 @@ import {
 } from './sessions.js';
 import { verifyPassword, isLocked, recordFailure, clearFailures, pinKey } from './pins.js';
 import { rateLimit, acquireStream } from './rateLimit.js';
-import { sendApprovalEmail, sendPersonAddEmail } from './mailer.js';
+import { sendApprovalEmail, sendPersonAddEmail, sendPasswordResetEmail } from './mailer.js';
+import { isExpired } from './tokens.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
@@ -336,16 +340,14 @@ api.get('/countries', (_req, res) => {
 async function signupOwner(req, res) {
   const body = req.body || {};
   const companyName = String(body.companyName || body.name || '').trim();
-  const gateName = String(body.gateName || body.name || '').trim();
   const ownerEmail = String(body.ownerEmail || '').trim().toLowerCase();
   const password = String(body.password || '');
-  if (!companyName || !gateName) return res.status(400).json({ error: 'name_required' });
+  if (!companyName) return res.status(400).json({ error: 'name_required' });
   if (!ownerEmail) return res.status(400).json({ error: 'email_required' });
   if (password.length < 8) return res.status(400).json({ error: 'password_short' });
   const result = await createCompany({
     companyName,
-    gateName,
-    name: gateName,
+    name: companyName,
     ownerName: body.ownerName,
     ownerEmail,
     password,
@@ -355,18 +357,17 @@ async function signupOwner(req, res) {
     timezone: body.timezone,
   });
   if (result.error) return fail(res, result);
-  const { company, site } = result;
+  const { company } = result;
   const session = await createSession({
     role: 'owner',
-    siteId: site.id,
-    companyId: site.companyId,
-    name: site.ownerName || 'Owner',
+    siteId: '',
+    companyId: company.id,
+    name: body.ownerName || 'Owner',
   });
   setOwnerCookie(res, session);
   return res.json({
     company: publicCompany(company),
-    site: publicSite(site),
-    sites: [publicSite(site)],
+    sites: [],
   });
 }
 
@@ -408,6 +409,39 @@ api.get('/owner/me', async (req, res) => {
   res.json({ company: publicCompany(company), sites: sites.map(publicSite) });
 });
 
+api.post('/owner/forgot', ownerLimit, async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const result = await requestPasswordReset(email);
+  if (result.magicToken && result.user) {
+    const origin = originFrom(req);
+    sendPasswordResetEmail({
+      to: result.user.email,
+      pageUrl: `${origin}/reset/${result.magicToken}`,
+      token: result.magicToken,
+      lang: 'en',
+    });
+  }
+  res.json({ ok: true });
+});
+
+api.get('/owner/reset/:token', async (req, res) => {
+  const row = await getPasswordResetByToken(req.params.token);
+  if (!row) return res.status(404).json({ error: 'not_found' });
+  if (row.usedAt || isExpired(row.expiresAt)) return res.status(410).json({ error: 'token_expired' });
+  res.json({ ok: true });
+});
+
+api.post('/owner/reset/:token', ownerLimit, async (req, res) => {
+  const password = String(req.body?.password || '');
+  const confirm = String(req.body?.confirm || '');
+  if (password !== confirm) return res.status(400).json({ error: 'password_mismatch' });
+  const result = await completePasswordReset(req.params.token, password);
+  if (result.error === 'not_found') return res.status(404).json({ error: result.error });
+  if (result.error === 'token_expired') return res.status(410).json({ error: result.error });
+  if (result.error) return fail(res, result);
+  res.json({ ok: true });
+});
+
 api.post('/companies/:companyId/sites', createLimit, async (req, res) => {
   const companyId = String(req.params.companyId || '');
   const session = await requireCompanyAccess(req, res, companyId, ['owner']);
@@ -426,7 +460,7 @@ api.post('/companies/:companyId/sites', createLimit, async (req, res) => {
     clientMeta(req, session),
   );
   if (result.error) return fail(res, result);
-  res.json({ site: publicSite(result.site) });
+  res.json({ site: publicSite(result.site), pin: result.pin });
 });
 
 api.get('/sites/:siteId', async (req, res) => {
@@ -448,36 +482,43 @@ api.get('/sites/:siteId/guards', async (req, res) => {
 });
 
 api.post('/guard/unlock', unlockLimit, async (req, res) => {
-  const { pin, slug, personId } = req.body || {};
+  const { pin, slug } = req.body || {};
   const cleanSlug = String(slug || '').trim();
-  if (!cleanSlug) return res.status(400).json({ error: 'slug_required' });
-  const site = await getSiteBySlug(cleanSlug);
   const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
-  if (!site) return res.status(401).json({ error: 'bad_pin' });
-  const key = pinKey(site.id, ip);
+  let site = null;
+  if (cleanSlug) {
+    site = await getSiteBySlug(cleanSlug);
+    if (!site) return res.status(401).json({ error: 'bad_pin' });
+  }
+  const key = pinKey(site?.id || 'pin', ip);
   const lock = isLocked(key);
   if (lock.locked) {
     res.set('Retry-After', String(Math.ceil(lock.retryAfterMs / 1000)));
     return res.status(429).json({ error: 'locked_out', retryAfterMs: lock.retryAfterMs });
   }
-  const named = await findGuardByPin(site.id, pin);
-  const namedMatch = named && (!personId || named.id === personId);
-  if (!namedMatch) {
+  if (!site) site = await findSiteByPin(pin);
+  else if (!(await verifySitePin(site, pin))) site = null;
+  if (!site) {
     recordFailure(key);
     return res.status(401).json({ error: 'bad_pin' });
   }
-  const actorName = named.name;
-  const actorPersonId = named.id;
+  const siteKey = pinKey(site.id, ip);
+  const siteLock = isLocked(siteKey);
+  if (siteLock.locked) {
+    res.set('Retry-After', String(Math.ceil(siteLock.retryAfterMs / 1000)));
+    return res.status(429).json({ error: 'locked_out', retryAfterMs: siteLock.retryAfterMs });
+  }
   clearFailures(key);
+  clearFailures(siteKey);
+  const actorName = site.name;
   const session = await createSession({
     role: 'booth',
     siteId: site.id,
     companyId: site.companyId,
     name: actorName,
-    personId: actorPersonId,
   });
   setBoothCookie(res, session);
-  res.json({ site: publicSite(site), guard: actorPersonId ? { id: actorPersonId, name: actorName } : null });
+  res.json({ site: publicSite(site), guard: { name: actorName } });
 });
 
 api.post('/sites/:siteId/timezone', async (req, res) => {
@@ -495,10 +536,7 @@ api.post('/sites/:siteId/pin/reset', async (req, res) => {
   if (!site) return;
   const session = await requireSiteAccess(req, res, site, ['owner']);
   if (!session) return;
-  const guards = await listGuards(site.id);
-  const personId = String(req.body?.personId || guards[0]?.id || '');
-  if (!personId) return res.status(404).json({ error: 'not_found' });
-  const result = await resetGuardPersonPin(site.id, personId, clientMeta(req, session));
+  const result = await resetGuardPin(site.id, clientMeta(req, session));
   if (result.error) return fail(res, result);
   res.json({ pin: result.pin });
 });

@@ -36,6 +36,17 @@ export function sendPersonAddEmail({ to, pageUrl, token, request, siteName, lang
   return deliver(`gate-daftar add-person mail for ${record.to}: ${record.pageUrl}`, record);
 }
 
+export function sendPasswordResetEmail({ to, pageUrl, token, lang }) {
+  const record = {
+    kind: 'password_reset',
+    to: String(to || '').trim().toLowerCase(),
+    pageUrl: String(pageUrl || ''),
+    token: String(token || ''),
+    lang: lang === 'en' ? 'en' : 'ar',
+  };
+  return deliver(`gate-daftar password-reset mail for ${record.to}: ${record.pageUrl}`, record);
+}
+
 export function sendApprovalEmail({ to, pageUrl, token, entry, siteName, lang }) {
   const record = {
     kind: 'approval',

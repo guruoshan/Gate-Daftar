@@ -8,16 +8,16 @@ export default function Landing({ t }) {
         <h1>{t.hero}</h1>
         <p className="lede">{t.sub}</p>
         <div className="cta-row">
-          <Link className="btn" to="/setup" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
-            {t.signUp}
+          <Link className="btn" to="/login" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
+            {t.adminDoor}
           </Link>
-          <Link className="ghost" to="/booth/demo" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
-            {t.openDemo}
-          </Link>
-          <Link className="ghost" to="/login" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
-            {t.ownerLogin}
+          <Link className="btn" to="/gate" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
+            {t.gateDoor}
           </Link>
         </div>
+        <p className="muted">
+          <Link to="/booth/demo">{t.openDemo}</Link>
+        </p>
       </section>
 
       <div className="grid-2">
