@@ -1,10 +1,10 @@
-# Sign up without a gate, then forgot-password — implementation plan
+# Sign up without a gate, Admin/Gate home, per-gate PIN, forgot-password — implementation plan
 
 > **For agentic workers:** Implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Sign up is company and admin only. It does not ask for a gate name and does not create a gate. The owner lands on Your gates, adds the first gate there, then adds people on that gate. Owner can reset a forgotten password with a one-time email link.
+**Goal:** Sign up is company and admin only. Public home is two doors: Admin (email + password) and Gate (that door’s PIN). Adding a gate shows a 6-digit PIN once. Owner can reset a forgotten password with a one-time email link.
 
-**Architecture:** Keep PostgreSQL, Express, Vite/React. New table `password_reset_requests` (not an entry). Reuse `hashToken` / `newMagicToken` / `tokenExpiry` (12 hours, one use). Company walls stay `session.companyId === site.companyId`. Site type (`pack`) moves onto the company so the first gate can inherit it.
+**Architecture:** Keep PostgreSQL, Express, Vite/React. New table `password_reset_requests` (not an entry). Reuse `hashToken` / `newMagicToken` / `tokenExpiry` (12 hours, one use). Company walls stay `session.companyId === site.companyId`. Site type (`pack`) on the company. Gate PIN is `sites.guard_pin_hash` again (one PIN per gate). Named-guard unlock is removed.
 
 **Tech stack:** Node ESM, `pg`, existing PIN/password hash, existing mailer stdout + inbox. Vitest + supertest. AR/EN in `frontend/src/i18n.js`.
 
@@ -18,28 +18,35 @@ Create:
 
 - `backend/migrations/007_signup_without_gate.sql` — company pack + password reset table
 - `backend/test/signup-without-gate.test.js` — signup, empty home, first gate inherits, walls
+- `backend/test/gate-pin.test.js` — add-gate PIN once, unlock by PIN, second gate, reset
 - `backend/test/password-reset.test.js` — forgot + reset proofs
 - `frontend/src/pages/ResetPassword.jsx` — new password + confirm
+- `frontend/src/pages/GateUnlock.jsx` — home Gate tab PIN pad (no slug, no guard dropdown)
 
 Edit:
 
 - `backend/src/db.js` — `truncateAll` includes `password_reset_requests`
-- `backend/src/store.js` — `createCompany` no site; company pack; reset token helpers; `addSite` inherits pack
+- `backend/src/store.js` — `createCompany` no site; company pack; `addSite` issues PIN; `findSiteByPin`; reset helpers; seed uses gate PIN
 - `backend/src/mailer.js` — `sendPasswordResetEmail`
-- `backend/src/index.js` — signup without gateName; forgot/reset routes
-- `backend/openapi.json` — signup wording; forgot/reset paths
-- `backend/test/helpers.js` — signup has no gate; `createOwnedSite` adds a gate after signup
-- `backend/test/fix12-ratelimit.test.js` — `/api/sites` no longer needs a gate name
-- `frontend/src/api.js` — forgot, resetGet, resetPost; signup body without gateName
-- `frontend/src/App.jsx` — `/reset/:token`
-- `frontend/src/pages/Setup.jsx` — drop gate name field
-- `frontend/src/pages/CompanyHome.jsx` — empty-state line when there are no gates
+- `backend/src/index.js` — signup without gateName; addSite returns PIN once; unlock by PIN; forgot/reset routes
+- `backend/openapi.json` — wording + new paths
+- `backend/test/helpers.js` — signup has no gate; `createOwnedSite` adds a gate and keeps `site.guardPin`
+- `backend/test/fix7-pin.test.js` — unlock without slug; PIN is on the site hash
+- `backend/test/fix8-pin-secret.test.js` — PIN comes from add-gate, not named guard
+- `backend/test/fix12-ratelimit.test.js` — `/api/sites` no gate name
+- `backend/test/session2-email.test.js` — drop personal-PIN-by-personId case or point it at the gate PIN
+- `frontend/src/api.js` — signup without gateName; addGate; forgot; reset; unlock `{ pin }`
+- `frontend/src/App.jsx` — `/reset/:token`; `/gate` unlock
+- `frontend/src/pages/Landing.jsx` — Admin / Gate
+- `frontend/src/pages/Setup.jsx` — drop gate name on signup; drop Guard role (or leave unused)
+- `frontend/src/pages/CompanyHome.jsx` — empty state; show PIN once after add; reset PIN
 - `frontend/src/pages/Login.jsx` — Forgot password
+- `frontend/src/pages/Booth.jsx` — PIN pad without guard dropdown; unlock `{ pin }` (slug still in URL when opened from admin)
 - `frontend/src/i18n.js` — AR+EN keys
 
 Do not edit `.env`. Do not add npm packages. Do not print real emails or PINs. Commit only if the user asks.
 
-Keep test helper `createOwnedSite` working for the rest of the suite: signup, then add a gate, then add a named guard. Do not rewrite every existing test.
+Keep `createOwnedSite` working for the rest of the suite: signup, then add a gate (PIN on `site.guardPin`), no named guard required for unlock. Do not rewrite every existing test unless it asserts named-guard unlock.
 
 ---
 
@@ -72,61 +79,59 @@ CREATE UNIQUE INDEX IF NOT EXISTS password_reset_token_hash_key
   ON password_reset_requests (magic_token_hash) WHERE magic_token_hash <> '';
 ```
 
-Do not put resets in `entries`. They must not appear on the live book.
+Do not put resets in `entries`.
 
 - [ ] **Step 2: Truncate**
 
-In `truncateAll`, add `password_reset_requests` to the `TRUNCATE` list.
+In `truncateAll`, add `password_reset_requests`.
 
 - [ ] **Step 3: Apply against local test DB**
 
 Run: `cd /workspace/backend && npm test -- test/health.test.js`
 
-Expect pass (vitest setup runs migrations). If it fails on SQL, fix the file before Task 2.
+Expect pass. If it fails on SQL, fix the file before Task 2.
 
 ---
 
-### Task 2: Store — company without a gate; pack; reset tokens
+### Task 2: Store — company without a gate; pack; per-gate PIN; reset tokens
 
 **Files:**
 - Modify: `backend/src/store.js`
 
 - [ ] **Step 1: Company pack on create**
 
-`createCompany` stores `pack: coercePack(pack)` on the company row. Insert columns include `pack`. Do not insert a `sites` row. Do not write `site_created` audit (no site yet). Return `{ company, site: null, user }`.
+`createCompany` stores `pack: coercePack(pack)` on the company. Insert columns include `pack`. Do not insert a `sites` row. Do not write `site_created` audit. Return `{ company, site: null, user }`.
 
-Still require company name + owner email + password at the route layer. Store still returns `email_taken` when the email exists.
+`publicCompany` includes `pack` (keep `id`, `name`, `countryIso`).
 
-`publicCompany` includes `pack` (and keep `id`, `name`, `countryIso`).
+- [ ] **Step 2: addSite issues a PIN**
 
-- [ ] **Step 2: addSite inherits pack**
+`addSite` inherits `pack` / country / timezone from the company (and first gate if any). Generate a 6-digit PIN with `generatePin()`. Hash with `hashPin`. Store on `guard_pin_hash`. If a hash collision with another site (vanishingly rare), generate again. Return `{ site, pin }`. Audit `site_created`.
 
-`addSite` sets `pack: coercePack(pack || company.pack || first?.pack)`. Country and timezone stay as today (company / first gate / body). Empty name still errors at the route.
+`resetGuardPin` already writes `sites.guard_pin_hash`. Keep it as the owner reset. Do not reset a named person’s `pin_hash` for unlock.
 
-- [ ] **Step 3: Password reset helpers**
+- [ ] **Step 3: findSiteByPin**
 
-Reuse `newMagicToken`, `hashToken`, `tokenExpiry`, `isMagicTokenExpired` (or `isExpired` from `tokens.js`).
+New helper: load sites that have `guard_pin_hash <> ''`, `verifyPin` against each, return the matching site or null. Used by unlock when slug is omitted. If slug is present, verify that site’s hash only (faster, same lock key as today).
 
-`requestPasswordReset(email)`:
+- [ ] **Step 4: Password reset helpers**
 
-- Look up user by email. If missing, return `{ ok: true }` with no token (caller still replies the same).
-- Insert a row on `password_reset_requests`. Return `{ ok: true, magicToken, user, company }` only when a user exists (token is for mailer, never put in the HTTP JSON).
+Reuse `newMagicToken`, `hashToken`, `tokenExpiry`, `isExpired`.
+
+`requestPasswordReset(email)`: missing user → `{ ok: true }` no token. Else insert row, return `{ ok: true, magicToken, user }` (token for mailer only).
 
 `getPasswordResetByToken(raw)` — by hash.
 
 `completePasswordReset(raw, password)`:
 
-- Missing token: `{ error: 'not_found' }`
-- Expired and unused: `{ error: 'token_expired' }`
-- Already used: `{ error: 'token_expired' }` or `{ error: 'not_found' }` (pick one and use it in tests; prefer `token_expired` for used/expired, `not_found` for unknown)
-- Password shorter than 8: `{ error: 'password_short' }`
-- Else: hash password onto `users.password_hash`, set `used_at`, return `{ ok: true }`
+- unknown: `{ error: 'not_found' }`
+- expired or already used: `{ error: 'token_expired' }`
+- password shorter than 8: `{ error: 'password_short' }`
+- else hash onto `users.password_hash`, set `used_at`, `{ ok: true }`
 
-Never return the raw token from these helpers except `requestPasswordReset` to the mailer path.
+- [ ] **Step 5: Seed**
 
-- [ ] **Step 4: Seed unchanged**
-
-`seedDemoIfEmpty` still creates the demo company **and** the demo gate. Do not make the demo gate-less.
+`seedDemoIfEmpty` still creates the demo company **and** demo gate. Set `guard_pin_hash` on that gate. Print `gate-daftar demo booth PIN:` once from that gate PIN. Still add demo people (managers/employees). Guard Ali as a **person** is optional; unlock must not need them.
 
 ---
 
@@ -139,35 +144,38 @@ Never return the raw token from these helpers except `requestPasswordReset` to t
 
 - [ ] **Step 1: Reset mail**
 
-Same pattern as `sendPersonAddEmail`. Kind `password_reset`. Line: `gate-daftar password-reset mail for ${to}: ${pageUrl}`. Record has `to`, `pageUrl`, `token` (inbox only, for tests), `lang`.
+Same pattern as `sendPersonAddEmail`. Kind `password_reset`. Line: `gate-daftar password-reset mail for ${to}: ${pageUrl}`. Page URL = `PUBLIC_ORIGIN` + `/reset/${token}`.
 
-Page URL uses `PUBLIC_ORIGIN` + `/reset/${token}` (same origin helper as approval; do not trust request Host).
+- [ ] **Step 2: Sign up**
 
-- [ ] **Step 2: Sign up route**
+`signupOwner`: require `companyName`, `ownerEmail`, password >= 8. Do **not** require `gateName`. JSON: `{ company, sites: [] }`. Same handler for `POST /owner/signup` and `POST /sites`. Cookie set.
 
-`signupOwner`: require `companyName`, `ownerEmail`, password length >= 8. Do **not** require `gateName`. Call `createCompany` with company fields only. Cookie still set. JSON: `{ company, sites: [] }` (no `site`, or `site: null`). Same handler for `POST /owner/signup` and `POST /sites`.
+- [ ] **Step 3: Add gate returns PIN once**
 
-- [ ] **Step 3: Forgot / reset routes**
+`POST /companies/:companyId/sites` already owner-only. Return `{ site: publicSite(site), pin }`. `publicSite` must not include `guardPin` or hash.
 
-Use the existing owner rate limiter (or the login limiter) on forgot.
+- [ ] **Step 4: Unlock**
 
-`POST /owner/forgot` body `{ email }`:
+`POST /guard/unlock` body `{ pin, slug? }`:
 
-- Always 200 `{ ok: true }` with the same message shape. No `token` field.
-- If a user exists, send reset mail. Catch `mail_not_configured` the same way as out-pass (503 only in production when SMTP is missing; tests are not production).
+- If `slug` present: today’s lock key (site + IP); verify that site’s `guard_pin_hash`.
+- If `slug` absent: require `pin`; `findSiteByPin`; lock key by IP (and site id once found). No match → `bad_pin`.
+- On match: booth session as today (`siteId`, `companyId`, name can be the site name). No `personId` required.
+- `GET /sites/:id/guards` may stay for now but the Gate tab and booth pad must not require picking a guard.
 
-`GET /owner/reset/:token`:
+`POST /sites/:id/pin/reset` stays owner-only and uses `resetGuardPin` (site hash). Stop picking `guards[0]` / `resetGuardPersonPin` for this route.
 
-- 404 unknown, 410 expired/used, 200 `{ ok: true }` (no email, no user id).
+- [ ] **Step 5: Forgot / reset routes**
 
-`POST /owner/reset/:token` body `{ password, confirm }`:
+`POST /owner/forgot` `{ email }`: always 200 `{ ok: true }`. No `token` field. Send mail only if user exists.
 
-- If `password !== confirm`: 400 `{ error: 'password_mismatch' }`
-- Else `completePasswordReset`. Map errors to 404/410/400. Success 200 `{ ok: true }`. Do not set a session cookie; they log in next.
+`GET /owner/reset/:token`: 404 unknown, 410 expired/used, 200 `{ ok: true }`.
 
-- [ ] **Step 4: OpenAPI**
+`POST /owner/reset/:token` `{ password, confirm }`: mismatch → 400 `password_mismatch`. Else `completePasswordReset`. Success 200 `{ ok: true }`. Do not set a session cookie.
 
-Change `/sites` and `/owner/signup` summaries to “Sign up a company (no gate)”. Add `/owner/forgot`, `/owner/reset/{token}` GET+POST.
+- [ ] **Step 6: OpenAPI**
+
+Signup summaries: “Sign up a company (no gate)”. Add-gate: “returns PIN once”. Unlock: “PIN; slug optional”. Add `/owner/forgot`, `/owner/reset/{token}`.
 
 ---
 
@@ -175,86 +183,97 @@ Change `/sites` and `/owner/signup` summaries to “Sign up a company (no gate)�
 
 **Files:**
 - Modify: `backend/test/helpers.js`
+- Modify: `backend/test/fix7-pin.test.js`
+- Modify: `backend/test/fix8-pin-secret.test.js`
 - Modify: `backend/test/fix12-ratelimit.test.js`
+- Modify: `backend/test/session2-email.test.js` (personal PIN test)
 - Create: `backend/test/signup-without-gate.test.js`
+- Create: `backend/test/gate-pin.test.js`
 - Create: `backend/test/password-reset.test.js`
 
 - [ ] **Step 1: Helpers**
 
-`signupCompany`: stop sending `gateName`. Expect `res.body.site` absent and `res.body.sites` empty.
+`signupCompany`: stop sending `gateName`. Expect no site.
 
-`createOwnedSite`: after signup, `POST /api/companies/${company.id}/sites` with `{ name }`, then `addNamedGuard` on that slug. Keep the same return shape `{ company, site, cookie, email, password }` so existing tests keep working.
+`createOwnedSite`: after signup, `POST /api/companies/${id}/sites` with `{ name }`, set `site.guardPin` from `body.pin`. Do **not** require `addNamedGuard` for unlock. Keep return shape `{ company, site, cookie, email, password }`.
 
-- [ ] **Step 2: Rate-limit helper**
+`unlockBooth(slug, pin)` may still send slug (booth URL). Also allow `{ pin }` only in the new tests.
 
-`makeSite` in `fix12-ratelimit.test.js` can omit gate name. Still expect 200 (company created).
+- [ ] **Step 2: Existing PIN tests**
+
+`fix7-pin.test.js`: “does not store PIN in plain text” → assert `sites.guard_pin_hash` (via `getDb` or a store read), not `people.pinHash`. Unlock without slug with the right PIN is 200. Wrong PIN 401. Lockout still works with slug + IP.
+
+`fix8-pin-secret.test.js`: create/add-gate returns PIN once; later site/snapshot JSON has no `guardPin`. Reset uses site PIN. Booth cannot reset.
+
+`fix12`: `makeSite` omits gate name.
+
+`session2-email.test.js` “names the guard on the booth session when a personal PIN is used”: change to unlock with the **gate** PIN; actor name may be the site name. Do not add a second person with `G-02`.
+
+Company-walls “gate-man PIN of A unlocks A gates and not B”: Gate 1 PIN must **not** unlock Gate 2 of the same company. Add a second PIN via add-gate. Update that test.
 
 - [ ] **Step 3: Signup proofs** (`signup-without-gate.test.js`)
 
-Cover spec items 1–4 and 8:
+Spec 1–4 and 11: signup zero gates; used email / short password; empty me.sites until add-gate; first gate inherits pack/country/timezone; A cannot open B.
 
-1. Signup with company + owner only: 200, company present, no site, `GET /owner/me` shows `sites: []`.
-2. Used email → `email_taken`. Password under 8 → `password_short`.
-3. After login, add gate → me lists one site. Snapshot of that slug is 200.
-4. Signup with `pack: 'workshop'`, `countryIso: 'AE'`, `timezone: 'Asia/Dubai'`. First `addSite` with only `{ name: 'Yard' }` inherits those (pack workshop, country AE, timezone Dubai).
-8. Company A cookie still 403 on Company B snapshot (one line is enough; walls suite still runs).
+- [ ] **Step 4: Gate PIN proofs** (`gate-pin.test.js`)
 
-- [ ] **Step 4: Reset proofs** (`password-reset.test.js`)
+Spec 5–7: add-gate returns `/^\d{6}$/`; later GET site/snapshot omit PIN; that PIN unlocks that slug (and `{ pin }` only); second gate of same company has a different PIN; first PIN does not unlock second; reset: old fails, new works.
 
-Cover spec items 5–7:
+- [ ] **Step 5: Reset proofs** (`password-reset.test.js`)
 
-5. Known email: 200 `{ ok: true }`, no token in body; `lastMail().token` set; DB/store has only a hash. Unknown email: 200 same body, no new mail (or mail count unchanged).
-6. GET+POST reset works once; second POST is 410/404. Expired: freeze time or pass a past expiry in a store-level test.
-7. Password under 8 refused. After success, login with old password is 401; login with new password is 200.
+Spec 8–10: known email 200 no token in JSON, `lastMail().token` set; unknown email 200 same body, mail count unchanged; works once; expired refused; short password refused; old login 401, new login 200. `example.com` only.
 
-Use `example.com` only. Never assert a real inbox address.
+- [ ] **Step 6: Run new files**
 
-- [ ] **Step 5: Run the new files**
+`cd /workspace/backend && npm test -- test/signup-without-gate.test.js test/gate-pin.test.js test/password-reset.test.js`
 
-`cd /workspace/backend && npm test -- test/signup-without-gate.test.js test/password-reset.test.js`
-
-Expect pass. If a helper change breaks `createOwnedSite`, fix helpers before touching other suites.
+Expect pass. Fix helpers if `createOwnedSite` breaks.
 
 ---
 
 ### Task 5: Frontend
 
 **Files:**
-- Modify: `frontend/src/api.js`
-- Modify: `frontend/src/App.jsx`
-- Modify: `frontend/src/pages/Setup.jsx`
-- Modify: `frontend/src/pages/CompanyHome.jsx`
-- Modify: `frontend/src/pages/Login.jsx`
-- Create: `frontend/src/pages/ResetPassword.jsx`
-- Modify: `frontend/src/i18n.js`
+- Modify: `frontend/src/api.js`, `App.jsx`, `Landing.jsx`, `Setup.jsx`, `CompanyHome.jsx`, `Login.jsx`, `Booth.jsx`, `i18n.js`
+- Create: `frontend/src/pages/ResetPassword.jsx`, `frontend/src/pages/GateUnlock.jsx`
 
 - [ ] **Step 1: API**
 
-`signup` body: `companyName`, `ownerName`, `ownerEmail`, `password`, `lang`, `pack`, `countryIso`, `timezone`. No `gateName`.
+Signup body without `gateName`. `addGate` already exists; expect `d.pin`. `unlock({ pin, slug? })`. `forgot`, `resetGet`, `resetPost`.
 
-Add `forgot({ email })`, `resetGet(token)`, `resetPost(token, { password, confirm })`.
+- [ ] **Step 2: Landing**
 
-- [ ] **Step 2: Sign up screen**
+Two buttons: `t.adminDoor` → `/login`. `t.gateDoor` → `/gate`. Demo booth as a small muted link, not a third equal button.
 
-Remove the gate name label + input. Keep company name, site type, country, time zone, your name, owner email, password. Still `nav('/home')` on success.
+- [ ] **Step 3: Sign up**
 
-- [ ] **Step 3: Your gates empty state**
+Remove gate name field. Keep company, site type, country, time zone, name, email, password. Success → `/home`.
 
-When `sites.length === 0`, show `t.homeEmpty` (add a gate first, then people). Keep the Add a gate form. Keep `t.homeHint` if already present.
+- [ ] **Step 4: Your gates**
 
-- [ ] **Step 4: Login + reset page**
+`sites.length === 0`: `t.homeEmpty`. Add a gate: on success, show `d.pin` once (`token-xl` + `t.newPinOnce`). Keep a `shownPin` in component state. Reset PIN button per gate (owner `api.resetPin(slug)`), show the new PIN once. Links: People, Reports. Open booth may stay for admin preview.
 
-Login: link `t.forgotPassword` toggling an email field + submit `api.forgot`. Always show `t.resetSent` (do not say whether the email exists).
+- [ ] **Step 5: Login + reset**
 
-`ResetPassword.jsx`: on load `resetGet`. Expired → `t.linkExpired`. Else two password fields + submit. Mismatch → `t.passwordMismatch`. Short → `t.passwordShort`. Success → message + link to `/login`.
+Login: Forgot password → email → always `t.resetSent`.
 
-`App.jsx`: `<Route path="/reset/:token" element={<ResetPassword t={t} />} />`.
+`ResetPassword.jsx`: GET token; expired → `t.linkExpired`; else two passwords; mismatch / short; success → link to `/login`.
 
-- [ ] **Step 5: i18n AR+EN**
+`App.jsx`: `/reset/:token`, `/gate`.
 
-Add both languages: `homeEmpty`, `forgotPassword`, `resetSent`, `resetTitle`, `newPassword`, `confirmPassword`, `passwordMismatch`, `savePassword`. Reuse `passwordShort`, `linkExpired`, `ownerEmail`. No em-dash. No comments unless the file already has them.
+- [ ] **Step 6: Gate tab and booth pad**
 
-- [ ] **Step 6: Frontend build**
+`GateUnlock.jsx`: title `t.pinUnlock`, number pad, submit `api.unlock({ pin })`, on 200 `nav(/booth/${site.slug})`. No guard dropdown.
+
+`Booth.jsx` locked pad: drop guard dropdown. Unlock `{ slug: siteId, pin }` when opened from `/booth/:siteId` (admin Open booth). After unlock, same live book.
+
+People add form: stop offering role Guard (employee / manager only). CSV already skips guards.
+
+- [ ] **Step 7: i18n AR+EN**
+
+`adminDoor`, `gateDoor`, `homeEmpty`, `forgotPassword`, `resetSent`, `resetTitle`, `newPassword`, `confirmPassword`, `passwordMismatch`, `savePassword`, `resetGatePin`. Reuse `passwordShort`, `linkExpired`, `guardPin`, `newPinOnce`. No em-dash.
+
+- [ ] **Step 8: Frontend build**
 
 `cd /workspace/frontend && npx vite build`
 
@@ -274,17 +293,17 @@ Expect success.
 
 | Spec item | Plan task |
 |---|---|
-| Sign up company + admin only, no gate | Tasks 2–3, 5 |
-| Your gates empty until Add a gate | Tasks 3, 5 |
-| First gate inherits pack/country/timezone | Task 2 step 2, Task 4 item 4 |
-| Forgot-password same reply | Task 3 step 3, Task 4 item 5 |
-| Hashed 12h one-use token | Tasks 1–2 |
-| Reset then login with new password | Task 4 item 7 |
-| Company walls | Task 4 item 8 |
-| AR+EN, no em-dash | Task 5 step 5 |
-| No extra deps / no SMTP product | Mailer stdout + inbox |
+| Home Admin / Gate | Task 5 |
+| Sign up company + admin only | Tasks 2–3, 5 |
+| Add a gate shows PIN once | Tasks 2–5 |
+| PIN unlocks that gate only | Tasks 3–4 |
+| Named-guard unlock removed | Tasks 3–5 |
+| Forgot-password | Tasks 2–5 |
+| Company walls | Task 4 |
+| AR+EN, no em-dash | Task 5 |
+| One company QR / cross-gate find | Out of scope |
 
-Placeholder scan: no TBD. Reset is not an entry. Signup does not insert a site.
+Placeholder scan: no TBD. Reset is not an entry. Signup does not insert a site. PIN is on `sites.guard_pin_hash`.
 
 ---
 
