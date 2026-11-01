@@ -16,19 +16,39 @@ async function req(path, opts = {}) {
 
 export const api = {
   health: () => req('/api/v1/health'),
-  createSite: (body) => req('/api/v1/sites', { method: 'POST', body: JSON.stringify(body) }),
+  createSite: (body) => req('/api/v1/owner/signup', { method: 'POST', body: JSON.stringify(body) }),
+  signup: (body) => req('/api/v1/owner/signup', { method: 'POST', body: JSON.stringify(body) }),
+  login: (body) => req('/api/v1/owner/login', { method: 'POST', body: JSON.stringify(body) }),
+  logout: () => req('/api/v1/owner/logout', { method: 'POST', body: '{}' }),
+  me: () => req('/api/v1/owner/me'),
+  addGate: (companyId, body) =>
+    req(`/api/v1/companies/${companyId}/sites`, { method: 'POST', body: JSON.stringify(body) }),
   site: (id) => req(`/api/v1/sites/${id}`),
   publicSite: (id) => req(`/api/v1/sites/${id}/public`),
   snapshot: (id, lang) => req(`/api/v1/sites/${id}/snapshot?lang=${lang || 'ar'}`),
   unlock: (body) => req('/api/v1/guard/unlock', { method: 'POST', body: JSON.stringify(body) }),
   guards: (id) => req(`/api/v1/sites/${id}/guards`),
   resetPin: (id) => req(`/api/v1/sites/${id}/pin/reset`, { method: 'POST', body: '{}' }),
+  forgot: (email) => req('/api/v1/owner/forgot', { method: 'POST', body: JSON.stringify({ email }) }),
+  resetGet: (token) => req(`/api/v1/owner/reset/${token}`),
+  resetPost: (token, body) =>
+    req(`/api/v1/owner/reset/${token}`, { method: 'POST', body: JSON.stringify(body) }),
   setTimezone: (id, timezone) =>
     req(`/api/v1/sites/${id}/timezone`, { method: 'POST', body: JSON.stringify({ timezone }) }),
-  requestCode: (body) => req('/api/v1/owner/request-code', { method: 'POST', body: JSON.stringify(body) }),
-  verifyCode: (body) => req('/api/v1/owner/verify', { method: 'POST', body: JSON.stringify(body) }),
+
   people: (id) => req(`/api/v1/sites/${id}/people`),
   addPerson: (id, body) => req(`/api/v1/sites/${id}/people`, { method: 'POST', body: JSON.stringify(body) }),
+  requestAdd: (id, body) =>
+    req(`/api/v1/sites/${id}/people/request-add`, { method: 'POST', body: JSON.stringify(body) }),
+  gateRequestAdd: (id, body) =>
+    req(`/api/v1/sites/${id}/gate/request-add`, { method: 'POST', body: JSON.stringify(body) }),
+  importPeople: (id, csv) =>
+    req(`/api/v1/sites/${id}/people/import`, { method: 'POST', body: JSON.stringify({ csv }) }),
+  downloadPeopleSample: async (id) => {
+    const res = await fetch(`/api/v1/sites/${id}/people/sample.csv`, { credentials: 'include' });
+    if (!res.ok) throw new Error('request_failed');
+    return res.blob();
+  },
   visitor: (id, body) => req(`/api/v1/sites/${id}/visitors`, { method: 'POST', body: JSON.stringify(body) }),
   outpass: (id, body) => req(`/api/v1/sites/${id}/outpass`, { method: 'POST', body: JSON.stringify(body) }),
   gateVisitor: (id, body) => req(`/api/v1/sites/${id}/gate/visitor`, { method: 'POST', body: JSON.stringify(body) }),

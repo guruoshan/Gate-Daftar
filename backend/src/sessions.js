@@ -1,11 +1,9 @@
 import crypto from 'crypto';
 import { query } from './db.js';
 
-const authCodes = new Map();
 const COOKIE_OWNER = 'gd_owner';
 const COOKIE_BOOTH = 'gd_booth';
 const MAX_AGE_SECONDS = 60 * 60 * 12;
-const CODE_TTL_MS = 10 * 60 * 1000;
 
 function tableFor(role) {
   return role === 'booth' ? 'device_sessions' : 'sessions';
@@ -87,29 +85,12 @@ export async function getSession(id) {
 
 export async function resetSessions() {
   await query('TRUNCATE sessions, device_sessions');
-  authCodes.clear();
 }
 
-export function createAuthCode(email, code) {
-  const key = String(email || '').trim().toLowerCase();
-  authCodes.set(key, {
-    code: code || crypto.randomInt(100000, 999999).toString(),
-    expiresAt: Date.now() + CODE_TTL_MS,
-  });
-  return authCodes.get(key);
-}
-
-export function consumeAuthCode(email, code) {
-  const key = String(email || '').trim().toLowerCase();
-  const rec = authCodes.get(key);
-  if (!rec) return false;
-  if (Date.now() > rec.expiresAt) {
-    authCodes.delete(key);
-    return false;
-  }
-  const ok = String(rec.code) === String(code);
-  if (ok) authCodes.delete(key);
-  return ok;
+export async function deleteSession(id) {
+  if (!id) return;
+  await query('DELETE FROM sessions WHERE id = $1', [id]);
+  await query('DELETE FROM device_sessions WHERE id = $1', [id]);
 }
 
 export function parseCookies(req) {
@@ -156,6 +137,12 @@ export function setOwnerCookie(res, session) {
   appendCookie(res, cookieLine(COOKIE_OWNER, signValue(session.id)));
 }
 
+export function clearOwnerCookie(res) {
+  const parts = [`${COOKIE_OWNER}=`, 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0'];
+  if (process.env.NODE_ENV === 'production') parts.push('Secure');
+  appendCookie(res, parts.join('; '));
+}
+
 export function setBoothCookie(res, session) {
   appendCookie(res, cookieLine(COOKIE_BOOTH, signValue(session.id)));
 }
@@ -178,7 +165,22 @@ export async function requireSiteAccess(req, res, site, roles = ['booth', 'owner
     res.status(401).json({ error: 'auth_required' });
     return null;
   }
-  const match = present.find((s) => s.siteId === site.id && roles.includes(s.role));
+  const match = present.find((s) => s.companyId === site.companyId && roles.includes(s.role));
+  if (!match) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return match;
+}
+
+export async function requireCompanyAccess(req, res, companyId, roles = ['owner']) {
+  const { owner, booth } = await readSessions(req);
+  const present = [owner, booth].filter(Boolean);
+  if (present.length === 0) {
+    res.status(401).json({ error: 'auth_required' });
+    return null;
+  }
+  const match = present.find((s) => s.companyId === companyId && roles.includes(s.role));
   if (!match) {
     res.status(403).json({ error: 'forbidden' });
     return null;

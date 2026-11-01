@@ -27,18 +27,24 @@ export default function Approve({ t, lang, setLang }) {
     setBusy(true);
     try {
       const d = await api.approvePost(token, decision, denyReason);
-      setData((prev) => ({ ...(current || prev), entry: d.entry }));
+      setData((prev) => ({ ...(current || prev), ...d, entry: d.entry || prev?.entry, request: d.request || prev?.request }));
     } catch (e) {
       if (e.body?.entry) setData((prev) => ({ ...prev, entry: e.body.entry }));
+      else if (e.body?.request) setData((prev) => ({ ...prev, kind: 'person_add', request: e.body.request }));
       else setErr(e.message);
     } finally {
       setBusy(false);
     }
   }
 
-  const entry = data?.entry;
-  const decided = entry && entry.status !== 'waiting_approval';
-  const ok = entry?.status === 'approved_out' || entry?.status === 'out' || entry?.status === 'returned';
+  const addReq = data?.kind === 'person_add' ? data.request : null;
+  const entry = addReq ? null : data?.entry;
+  const decided = addReq
+    ? addReq.status !== 'waiting'
+    : entry && entry.status !== 'waiting_approval';
+  const ok = addReq
+    ? addReq.status === 'approved'
+    : entry?.status === 'approved_out' || entry?.status === 'out' || entry?.status === 'returned';
 
   return (
     <div>
@@ -46,7 +52,7 @@ export default function Approve({ t, lang, setLang }) {
         <div className="brand">
           <span className="mark">GD</span>
           <span>
-            <span className="brand-name">{t.magicTitle}</span>
+            <span className="brand-name">{addReq ? t.addPersonTitle : t.magicTitle}</span>
             <span className="brand-tag">{t.noLogin}</span>
           </span>
         </div>
@@ -56,9 +62,38 @@ export default function Approve({ t, lang, setLang }) {
       </header>
       <main className="wrap">
 
-      {!entry && err && (
+      {!entry && !addReq && err && (
         <article className="card">
           <h2>{t.linkExpired}</h2>
+        </article>
+      )}
+
+      {addReq && (
+        <article className="card">
+          <div className={`badge ${ok ? 'b-ok' : decided ? 'b-bad' : 'b-wait'}`}>
+            {ok ? t.approve : decided ? t.denied : t.waitMgr}
+          </div>
+          <h1 style={{ maxWidth: 'none' }}>{addReq.name}</h1>
+          <p className="meta">
+            {data.site?.name || ''}
+            {addReq.employeeId ? ` · ${addReq.employeeId}` : ''}
+          </p>
+          {decided ? (
+            <h3>{ok ? t.approvedOk : t.deniedOk}</h3>
+          ) : (
+            <>
+              <label htmlFor="dr">{t.denyReason}</label>
+              <input id="dr" value={denyReason} onChange={(e) => setDenyReason(e.target.value)} />
+              <div className="cta-row">
+                <button className="btn-ok" type="button" disabled={busy} onClick={() => act('approve')} style={{ flex: 1, display: 'inline-flex', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
+                  <IconCheck /> {t.approve}
+                </button>
+                <button className="btn-bad" type="button" disabled={busy} onClick={() => act('deny')} style={{ flex: 1, display: 'inline-flex', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
+                  <IconX /> {t.deny}
+                </button>
+              </div>
+            </>
+          )}
         </article>
       )}
 

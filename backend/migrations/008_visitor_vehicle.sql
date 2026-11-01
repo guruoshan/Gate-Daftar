@@ -1,0 +1,1 @@
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS vehicle text NOT NULL DEFAULT '';

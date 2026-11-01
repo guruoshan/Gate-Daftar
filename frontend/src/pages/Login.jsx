@@ -1,41 +1,39 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 
 export default function Login({ t }) {
   const nav = useNavigate();
   const [email, setEmail] = useState('');
-  const [code, setCode] = useState('');
-  const [sent, setSent] = useState(false);
-  const [devCode, setDevCode] = useState('');
+  const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotSent, setForgotSent] = useState(false);
 
-  async function request(e) {
+  async function submit(e) {
     e.preventDefault();
     setErr('');
     setBusy(true);
     try {
-      const d = await api.requestCode({ email });
-      setSent(true);
-      if (d.devCode) setDevCode(d.devCode);
+      await api.login({ email, password });
+      nav('/home', { replace: true });
     } catch {
-      setErr(t.required);
+      setErr(t.badLogin);
     } finally {
       setBusy(false);
     }
   }
 
-  async function verify(e) {
+  async function sendForgot(e) {
     e.preventDefault();
-    setErr('');
     setBusy(true);
     try {
-      const d = await api.verifyCode({ email, code });
-      if (d.site?.slug) nav(`/reports/${d.site.slug}`, { replace: true });
-      else nav('/', { replace: true });
+      await api.forgot(forgotEmail || email);
+      setForgotSent(true);
     } catch {
-      setErr(t.pinBad);
+      setForgotSent(true);
     } finally {
       setBusy(false);
     }
@@ -44,7 +42,7 @@ export default function Login({ t }) {
   return (
     <main className="wrap">
       <h1>{t.ownerLogin}</h1>
-      <form className="card" onSubmit={sent ? verify : request}>
+      <form className="card" onSubmit={submit}>
         <label htmlFor="oe">{t.ownerEmail}</label>
         <input
           id="oe"
@@ -53,20 +51,47 @@ export default function Login({ t }) {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
-        {sent && (
-          <>
-            <label htmlFor="oc">{t.enterCode}</label>
-            <input id="oc" inputMode="numeric" value={code} onChange={(e) => setCode(e.target.value)} />
-            {devCode && <p className="muted">{`${t.enterCode}: ${devCode}`}</p>}
-          </>
-        )}
+        <label htmlFor="op">{t.password}</label>
+        <input
+          id="op"
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
         {err && <div className="field-err">{err}</div>}
         <div className="cta-row">
           <button className="btn" type="submit" disabled={busy}>
-            {busy ? t.sending : sent ? t.verify : t.sendCode}
+            {busy ? t.sending : t.verify}
           </button>
         </div>
       </form>
+      <p className="muted">
+        <button type="button" className="lang-btn" onClick={() => setForgotOpen(true)}>
+          {t.forgotPassword}
+        </button>
+      </p>
+      {forgotOpen && (
+        <form className="card" onSubmit={sendForgot}>
+          <label htmlFor="fe">{t.ownerEmail}</label>
+          <input
+            id="fe"
+            type="email"
+            autoComplete="email"
+            value={forgotEmail || email}
+            onChange={(e) => setForgotEmail(e.target.value)}
+          />
+          {forgotSent && <p className="muted">{t.resetSent}</p>}
+          {!forgotSent && (
+            <button className="btn" type="submit" disabled={busy}>
+              {busy ? t.sending : t.forgotPassword}
+            </button>
+          )}
+        </form>
+      )}
+      <p className="muted">
+        <Link to="/setup">{t.signUp}</Link>
+      </p>
     </main>
   );
 }

@@ -23,12 +23,28 @@ function deliver(line, record) {
   return { delivered: true };
 }
 
-export function sendLoginCode(email, code) {
-  return deliver(`gate-daftar login code for ${email}: ${code}`, {
-    kind: 'login',
-    to: String(email || '').trim().toLowerCase(),
-    code: String(code || ''),
-  });
+export function sendPersonAddEmail({ to, pageUrl, token, request, siteName, lang }) {
+  const record = {
+    kind: 'person_add',
+    to: String(to || '').trim().toLowerCase(),
+    pageUrl: String(pageUrl || ''),
+    token: String(token || ''),
+    requestId: request?.id || '',
+    lang: lang === 'en' ? 'en' : 'ar',
+    siteName: siteName || '',
+  };
+  return deliver(`gate-daftar add-person mail for ${record.to}: ${record.pageUrl}`, record);
+}
+
+export function sendPasswordResetEmail({ to, pageUrl, token, lang }) {
+  const record = {
+    kind: 'password_reset',
+    to: String(to || '').trim().toLowerCase(),
+    pageUrl: String(pageUrl || ''),
+    token: String(token || ''),
+    lang: lang === 'en' ? 'en' : 'ar',
+  };
+  return deliver(`gate-daftar password-reset mail for ${record.to}: ${record.pageUrl}`, record);
 }
 
 export function sendApprovalEmail({ to, pageUrl, token, entry, siteName, lang }) {

@@ -85,7 +85,7 @@ export async function runMigrations() {
 
 export async function truncateAll() {
   await query(
-    'TRUNCATE companies, sites, users, people, entries, approval_tokens, audit_events, events, sessions, device_sessions RESTART IDENTITY CASCADE',
+    'TRUNCATE companies, sites, users, people, entries, approval_tokens, person_add_requests, password_reset_requests, audit_events, events, sessions, device_sessions RESTART IDENTITY CASCADE',
   );
 }
 

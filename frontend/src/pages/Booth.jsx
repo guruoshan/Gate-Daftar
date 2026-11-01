@@ -46,8 +46,6 @@ export default function Booth({ t, lang, setLang }) {
   const [toast, setToast] = useState('');
   const [q, setQ] = useState('');
   const [una, setUna] = useState(null);
-  const [guards, setGuards] = useState([]);
-  const [guardId, setGuardId] = useState('');
   const [remoteHits, setRemoteHits] = useState([]);
   const [nextCursor, setNextCursor] = useState('');
   const [searching, setSearching] = useState(false);
@@ -67,9 +65,6 @@ export default function Booth({ t, lang, setLang }) {
       .finally(() => {
         if (!stop) setChecking(false);
       });
-    api.guards(siteId).then((d) => {
-      if (!stop) setGuards(d.guards || []);
-    }).catch(() => {});
     return () => {
       stop = true;
     };
@@ -84,7 +79,7 @@ export default function Booth({ t, lang, setLang }) {
   async function unlock(code) {
     setPinErr('');
     try {
-        await api.unlock({ slug: siteId, pin: code, personId: guardId || undefined });
+        await api.unlock({ slug: siteId, pin: code });
        setAuthed(true);
     } catch {
       setPinErr(t.pinBad);
@@ -159,17 +154,6 @@ export default function Booth({ t, lang, setLang }) {
         <h1>{t.pinUnlock}</h1>
         <p className="lede">{siteId === 'demo' ? t.demoHint : t.booth}</p>
         <div className="card">
-          {guards.length > 0 && (
-            <>
-              <label htmlFor="gid">{t.pickGuard}</label>
-              <select id="gid" value={guardId} onChange={(e) => setGuardId(e.target.value)}>
-                <option value="">{t.sharedPin}</option>
-                {guards.map((g) => (
-                  <option key={g.id} value={g.id}>{g.name}</option>
-                ))}
-              </select>
-            </>
-          )}
           <div className="token-xl" style={{ textAlign: 'center' }}>
             {pin.padEnd(PIN_LEN, '·')}
           </div>
@@ -180,6 +164,7 @@ export default function Booth({ t, lang, setLang }) {
                 key={k || 'sp'}
                 type="button"
                 disabled={!k}
+                aria-label={k === '⌫' ? 'backspace' : k || undefined}
                 onClick={() => {
                   if (k === '⌫') setPin((p) => p.slice(0, -1));
                   else if (k) press(k);
@@ -376,7 +361,7 @@ function EntryCard({ entry, t, lang, timeZone, onToast, onUna }) {
           </div>
           {entry.kind === 'visitor' && (
             <div className="meta">
-              {[entry.company, entry.purpose, entry.hostName].filter(Boolean).join(' · ')}
+              {[entry.company, entry.purpose, entry.hostName, entry.vehicle].filter(Boolean).join(' · ')}
             </div>
           )}
           {entry.kind === 'outpass' && (
@@ -438,8 +423,11 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [created, setCreated] = useState(null);
-  const [v, setV] = useState({ name: '', phone: '', company: '', purpose: '', hostName: '', idNumber: '', cardNumber: '' });
+  const [v, setV] = useState({ name: '', phone: '', company: '', purpose: '', hostName: '', vehicle: '', idNumber: '', cardNumber: '' });
   const [o, setO] = useState({ personId: '', managerId: '', reason: '', expectedMinutes: 60 });
+  const [notOnList, setNotOnList] = useState(false);
+  const [addForm, setAddForm] = useState({ name: '', employeeId: '', managerId: '' });
+  const [addDone, setAddDone] = useState(false);
   const managers = people.filter((p) => p.role === 'manager');
   const employees = people.filter((p) => p.role !== 'manager' && p.role !== 'guard');
   const picked = employees.find((p) => p.id === o.personId);
@@ -471,6 +459,16 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
         await api.visitor(siteId, { ...v, source: 'guard' });
         onToast(t.visitor);
       } else {
+        if (notOnList) {
+          if (!addForm.name.trim() || !addForm.managerId) {
+            setErr('req');
+            setBusy(false);
+            return;
+          }
+          await api.requestAdd(siteId, { ...addForm, lang });
+          setAddDone(true);
+          return;
+        }
         if (!o.personId || !o.managerId || !o.reason.trim()) {
           setErr('req');
           setBusy(false);
@@ -487,6 +485,8 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
       if (code === 'phone_invalid') setErr('phone');
       else if (code === 'email_domain_not_allowed') setErr('email_domain');
       else if (code === 'mail_not_configured') setErr('mail');
+      else if (code === 'already_on_list') setErr('already');
+      else if (code === 'manager_required') setErr('manager');
       else setErr('fail');
     } finally {
       setBusy(false);
@@ -496,7 +496,13 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
   return (
     <div className="modal-bg" onClick={onClose} role="presentation">
       <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
-        {created ? (
+        {addDone ? (
+          <>
+            <h2>{t.addPersonTitle}</h2>
+            <p className="muted">{t.addRequested}</p>
+            <button type="button" className="btn" onClick={onClose}>{t.close}</button>
+          </>
+        ) : created ? (
           <>
             <h2>{t.outpass}</h2>
             <p className="muted">{t.sayToken}</p>
@@ -538,6 +544,8 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
               <input id="vu" value={v.purpose} onChange={(e) => setV({ ...v, purpose: e.target.value })} />
               <label htmlFor="vh">{t.host}</label>
               <input id="vh" value={v.hostName} onChange={(e) => setV({ ...v, hostName: e.target.value })} />
+              <label htmlFor="vv">{t.vehicle}</label>
+              <input id="vv" value={v.vehicle} onChange={(e) => setV({ ...v, vehicle: e.target.value })} />
               <label htmlFor="vi">{t.idCard}</label>
               <input id="vi" value={v.idNumber} onChange={(e) => setV({ ...v, idNumber: e.target.value })} />
               <label htmlFor="vcd">{t.card}</label>
@@ -546,7 +554,29 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
           ) : (
             <>
               <p className="muted">{t.rosterOnly}</p>
-              {employees.length === 0 ? (
+              <button
+                type="button"
+                className={notOnList ? 'btn' : 'ghost'}
+                onClick={() => setNotOnList((v) => !v)}
+              >
+                {t.notOnList}
+              </button>
+              {notOnList ? (
+                  <>
+                    <label htmlFor="an">{t.personName}<span className="req">*</span></label>
+                    <input id="an" value={addForm.name} onChange={(e) => setAddForm({ ...addForm, name: e.target.value })} />
+                    <label htmlFor="aid">{t.empId}</label>
+                    <input id="aid" value={addForm.employeeId} onChange={(e) => setAddForm({ ...addForm, employeeId: e.target.value })} />
+                    <label htmlFor="am">{t.selectManager}<span className="req">*</span></label>
+                    <select id="am" value={addForm.managerId} onChange={(e) => setAddForm({ ...addForm, managerId: e.target.value })} disabled={managers.length === 0}>
+                      <option value="">{t.selectManager}</option>
+                      {managers.map((m) => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                    </select>
+                    {managers.length === 0 && <p className="field-err">{t.needManagerFirst}</p>}
+                  </>
+              ) : employees.length === 0 ? (
                 <p className="field-err">{t.noRoster}</p>
               ) : (
                 <>
@@ -582,10 +612,12 @@ function CreatePass({ t, lang, siteId, iso = 'SA', people, onClose, onToast }) {
           {err === 'phone' && <div className="field-err">{t.phoneInvalid}</div>}
           {err === 'email_domain' && <div className="field-err">{t.emailDomainBad}</div>}
           {err === 'mail' && <div className="field-err">{t.mailNotConfigured}</div>}
-          {err && err !== 'phone' && err !== 'email_domain' && err !== 'mail' && <div className="field-err">{t.required}</div>}
+          {err === 'already' && <div className="field-err">{t.alreadyOnList}</div>}
+          {err === 'manager' && <div className="field-err">{t.noRoster}</div>}
+          {err && err !== 'phone' && err !== 'email_domain' && err !== 'mail' && err !== 'already' && err !== 'manager' && <div className="field-err">{t.required}</div>}
           <div className="cta-row">
             <button type="button" className="ghost" onClick={onClose}>{t.cancel}</button>
-            <button type="submit" className="btn" disabled={busy || (kind === 'outpass' && employees.length === 0)}>{busy ? t.sending : t.submit}</button>
+            <button type="submit" className="btn" disabled={busy || (kind === 'outpass' && !notOnList && employees.length === 0) || (kind === 'outpass' && notOnList && managers.length === 0)}>{busy ? t.sending : t.submit}</button>
           </div>
         </form>
           </>

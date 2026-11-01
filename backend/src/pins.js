@@ -69,3 +69,6 @@ export function clearFailures(key) {
 export function resetPinState() {
   failures.clear();
 }
+
+export const hashPassword = hashPin;
+export const verifyPassword = verifyPin;

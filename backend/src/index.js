@@ -7,12 +7,16 @@ import { fileURLToPath } from 'url';
 import {
   initStore,
   seedDemoIfEmpty,
-  createSite,
+  createCompany,
+  addSite,
   publicSite,
+  publicCompany,
   publicGateView,
   getSite,
   getSiteBySlug,
-  getSiteByOwnerEmail,
+  getCompany,
+  getUserByEmail,
+  listSitesByCompany,
   addPerson,
   snapshot,
   createVisitor,
@@ -39,10 +43,18 @@ import {
   redactPerson,
   redactAudit,
   resetGuardPin,
-  resetGuardPersonPin,
-  findGuardByPin,
+  findSiteByPin,
+  verifySitePin,
+  requestPasswordReset,
+  getPasswordResetByToken,
+  completePasswordReset,
   rotateOutPassToken,
   updateSiteTimezone,
+  createPersonAdd,
+  getPersonAddByToken,
+  decidePersonAdd,
+  publicPersonAdd,
+  importPeopleCsv,
 } from './store.js';
 import { buildXlsx } from './xlsx.js';
 import { healthCheck } from './db.js';
@@ -52,15 +64,17 @@ import { writePid } from './boot.js';
 import {
   createSession,
   setOwnerCookie,
+  clearOwnerCookie,
   setBoothCookie,
   requireSiteAccess,
+  requireCompanyAccess,
   readSessions,
-  createAuthCode,
-  consumeAuthCode,
+  deleteSession,
 } from './sessions.js';
-import { verifyPin, isLocked, recordFailure, clearFailures, pinKey } from './pins.js';
+import { verifyPassword, isLocked, recordFailure, clearFailures, pinKey } from './pins.js';
 import { rateLimit, acquireStream } from './rateLimit.js';
-import { sendLoginCode, sendApprovalEmail } from './mailer.js';
+import { sendApprovalEmail, sendPersonAddEmail, sendPasswordResetEmail } from './mailer.js';
+import { isExpired } from './tokens.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
@@ -144,6 +158,7 @@ const unlockLimit = rateLimit({ name: 'unlock', windowMs: 15 * 60 * 1000, max: 3
 const approveLimit = rateLimit({ name: 'approve', windowMs: 60 * 1000, max: 60 });
 const exportLimit = rateLimit({ name: 'export', windowMs: 60 * 60 * 1000, max: 40 });
 const ownerLimit = rateLimit({ name: 'owner', windowMs: 15 * 60 * 1000, max: 20 });
+const importLimit = rateLimit({ name: 'people-import', windowMs: 60 * 60 * 1000, max: 10 });
 
 function clientMeta(req, session, extra = {}) {
   return {
@@ -222,6 +237,22 @@ function mailApproval(req, entry, magicToken, lang) {
   return shared;
 }
 
+function mailPersonAdd(req, request, manager, magicToken, lang) {
+  const urls = approvalUrls(req, magicToken);
+  sendPersonAddEmail({
+    to: manager.email,
+    pageUrl: urls.pageUrl,
+    token: magicToken,
+    request,
+    siteName: '',
+    lang,
+  });
+  return publicPersonAdd(request);
+}
+
+const PEOPLE_SAMPLE_CSV =
+  '\uFEFFRole,Name,Employee ID,Work email,Phone,Manager name\nmanager,Khalid Al-Harbi,M-01,khalid@example.com,,\nemployee,Yousef Hassan,E-104,,,Khalid Al-Harbi\n';
+
 function waitingView(entry) {
   return {
     ...redactEntry(entry),
@@ -253,7 +284,14 @@ async function siteOr404(req, res) {
 
 function fail(res, result) {
   const code =
-    result.error === 'not_found' ? 404 : result.error === 'invalid_state' ? 409 : 400;
+    result.error === 'not_found'
+      ? 404
+      : result.error === 'invalid_state' ||
+          result.error === 'email_taken' ||
+          result.error === 'already_on_list' ||
+          result.error === 'employee_id_taken'
+        ? 409
+        : 400;
   const body = { error: result.error };
   if (result.entry) body.entry = redactEntry(result.entry);
   if (result.entry?.status) body.status = result.entry.status;
@@ -299,26 +337,130 @@ api.get('/countries', (_req, res) => {
   res.json({ countries: COUNTRIES, timezones: SITE_TIMEZONES });
 });
 
-api.post('/sites', createLimit, async (req, res) => {
-  const { name, ownerName, ownerEmail, lang, pack, countryIso, timezone } = req.body || {};
-  if (!name || !String(name).trim()) {
-    return res.status(400).json({ error: 'name_required' });
-  }
-  const { site, pin } = await createSite({ name, ownerName, ownerEmail, lang, pack, countryIso, timezone });
+async function signupOwner(req, res) {
+  const body = req.body || {};
+  const companyName = String(body.companyName || body.name || '').trim();
+  const ownerEmail = String(body.ownerEmail || '').trim().toLowerCase();
+  const password = String(body.password || '');
+  if (!companyName) return res.status(400).json({ error: 'name_required' });
+  if (!ownerEmail) return res.status(400).json({ error: 'email_required' });
+  if (password.length < 8) return res.status(400).json({ error: 'password_short' });
+  const result = await createCompany({
+    companyName,
+    name: companyName,
+    ownerName: body.ownerName,
+    ownerEmail,
+    password,
+    lang: body.lang,
+    pack: body.pack,
+    countryIso: body.countryIso,
+    timezone: body.timezone,
+  });
+  if (result.error) return fail(res, result);
+  const { company } = result;
   const session = await createSession({
     role: 'owner',
-    siteId: site.id,
-    companyId: site.companyId,
-    name: site.ownerName || 'Owner',
+    siteId: '',
+    companyId: company.id,
+    name: body.ownerName || 'Owner',
   });
   setOwnerCookie(res, session);
-  res.json({
-    site: {
-      ...publicSite(site),
-      guardPin: pin,
-      ownerName: site.ownerName,
-    },
+  return res.json({
+    company: publicCompany(company),
+    sites: [],
   });
+}
+
+api.post('/sites', createLimit, signupOwner);
+api.post('/owner/signup', createLimit, signupOwner);
+
+api.post('/owner/login', ownerLimit, async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+  if (!email || !password) return res.status(401).json({ error: 'bad_login' });
+  const user = await getUserByEmail(email);
+  if (!user || !verifyPassword(password, user.passwordHash)) {
+    return res.status(401).json({ error: 'bad_login' });
+  }
+  const company = await getCompany(user.companyId);
+  const sites = await listSitesByCompany(user.companyId);
+  const session = await createSession({
+    role: 'owner',
+    siteId: sites[0]?.id || '',
+    companyId: user.companyId,
+    name: sites[0]?.ownerName || 'Owner',
+  });
+  setOwnerCookie(res, session);
+  res.json({ company: publicCompany(company), sites: sites.map(publicSite) });
+});
+
+api.post('/owner/logout', async (req, res) => {
+  const { owner } = await readSessions(req);
+  if (owner) await deleteSession(owner.id);
+  clearOwnerCookie(res);
+  res.json({ ok: true });
+});
+
+api.get('/owner/me', async (req, res) => {
+  const { owner } = await readSessions(req);
+  if (!owner) return res.status(401).json({ error: 'auth_required' });
+  const company = await getCompany(owner.companyId);
+  const sites = await listSitesByCompany(owner.companyId);
+  res.json({ company: publicCompany(company), sites: sites.map(publicSite) });
+});
+
+api.post('/owner/forgot', ownerLimit, async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const result = await requestPasswordReset(email);
+  if (result.magicToken && result.user) {
+    const origin = originFrom(req);
+    sendPasswordResetEmail({
+      to: result.user.email,
+      pageUrl: `${origin}/reset/${result.magicToken}`,
+      token: result.magicToken,
+      lang: 'en',
+    });
+  }
+  res.json({ ok: true });
+});
+
+api.get('/owner/reset/:token', async (req, res) => {
+  const row = await getPasswordResetByToken(req.params.token);
+  if (!row) return res.status(404).json({ error: 'not_found' });
+  if (row.usedAt || isExpired(row.expiresAt)) return res.status(410).json({ error: 'token_expired' });
+  res.json({ ok: true });
+});
+
+api.post('/owner/reset/:token', ownerLimit, async (req, res) => {
+  const password = String(req.body?.password || '');
+  const confirm = String(req.body?.confirm || '');
+  if (password !== confirm) return res.status(400).json({ error: 'password_mismatch' });
+  const result = await completePasswordReset(req.params.token, password);
+  if (result.error === 'not_found') return res.status(404).json({ error: result.error });
+  if (result.error === 'token_expired') return res.status(410).json({ error: result.error });
+  if (result.error) return fail(res, result);
+  res.json({ ok: true });
+});
+
+api.post('/companies/:companyId/sites', createLimit, async (req, res) => {
+  const companyId = String(req.params.companyId || '');
+  const session = await requireCompanyAccess(req, res, companyId, ['owner']);
+  if (!session) return;
+  const name = String(req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'name_required' });
+  const result = await addSite(
+    companyId,
+    {
+      name,
+      pack: req.body?.pack,
+      lang: req.body?.lang,
+      countryIso: req.body?.countryIso,
+      timezone: req.body?.timezone,
+    },
+    clientMeta(req, session),
+  );
+  if (result.error) return fail(res, result);
+  res.json({ site: publicSite(result.site), pin: result.pin });
 });
 
 api.get('/sites/:siteId', async (req, res) => {
@@ -340,40 +482,43 @@ api.get('/sites/:siteId/guards', async (req, res) => {
 });
 
 api.post('/guard/unlock', unlockLimit, async (req, res) => {
-  const { pin, slug, personId } = req.body || {};
+  const { pin, slug } = req.body || {};
   const cleanSlug = String(slug || '').trim();
-  if (!cleanSlug) return res.status(400).json({ error: 'slug_required' });
-  const site = await getSiteBySlug(cleanSlug);
   const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
-  if (!site) return res.status(401).json({ error: 'bad_pin' });
-  const key = pinKey(site.id, ip);
+  let site = null;
+  if (cleanSlug) {
+    site = await getSiteBySlug(cleanSlug);
+    if (!site) return res.status(401).json({ error: 'bad_pin' });
+  }
+  const key = pinKey(site?.id || 'pin', ip);
   const lock = isLocked(key);
   if (lock.locked) {
     res.set('Retry-After', String(Math.ceil(lock.retryAfterMs / 1000)));
     return res.status(429).json({ error: 'locked_out', retryAfterMs: lock.retryAfterMs });
   }
-  let actorName = 'Booth';
-  let actorPersonId = '';
-  const named = personId ? await findGuardByPin(site.id, pin) : null;
-  const namedMatch = named && (!personId || named.id === personId);
-  const sharedOk = verifyPin(String(pin || ''), site.guardPinHash);
-  if (namedMatch) {
-    actorName = named.name;
-    actorPersonId = named.id;
-  } else if (!sharedOk) {
+  if (!site) site = await findSiteByPin(pin);
+  else if (!(await verifySitePin(site, pin))) site = null;
+  if (!site) {
     recordFailure(key);
     return res.status(401).json({ error: 'bad_pin' });
   }
+  const siteKey = pinKey(site.id, ip);
+  const siteLock = isLocked(siteKey);
+  if (siteLock.locked) {
+    res.set('Retry-After', String(Math.ceil(siteLock.retryAfterMs / 1000)));
+    return res.status(429).json({ error: 'locked_out', retryAfterMs: siteLock.retryAfterMs });
+  }
   clearFailures(key);
+  clearFailures(siteKey);
+  const actorName = site.name;
   const session = await createSession({
     role: 'booth',
     siteId: site.id,
     companyId: site.companyId,
     name: actorName,
-    personId: actorPersonId,
   });
   setBoothCookie(res, session);
-  res.json({ site: publicSite(site), guard: actorPersonId ? { id: actorPersonId, name: actorName } : null });
+  res.json({ site: publicSite(site), guard: { name: actorName } });
 });
 
 api.post('/sites/:siteId/timezone', async (req, res) => {
@@ -394,41 +539,6 @@ api.post('/sites/:siteId/pin/reset', async (req, res) => {
   const result = await resetGuardPin(site.id, clientMeta(req, session));
   if (result.error) return fail(res, result);
   res.json({ pin: result.pin });
-});
-
-api.post('/owner/request-code', ownerLimit, async (req, res) => {
-  const email = String(req.body?.email || '').trim().toLowerCase();
-  if (!email) return res.status(400).json({ error: 'email_required' });
-  const site = await getSiteByOwnerEmail(email);
-  if (site) {
-    const rec = createAuthCode(email);
-    try {
-      sendLoginCode(email, rec.code);
-    } catch {
-      return res.status(503).json({ error: 'mail_not_configured' });
-    }
-    if (process.env.NODE_ENV !== 'production') {
-      return res.json({ ok: true, devCode: rec.code });
-    }
-  }
-  res.json({ ok: true });
-});
-
-api.post('/owner/verify', ownerLimit, async (req, res) => {
-  const email = String(req.body?.email || '').trim().toLowerCase();
-  const code = String(req.body?.code || '').trim();
-  if (!email || !code) return res.status(400).json({ error: 'email_and_code_required' });
-  if (!consumeAuthCode(email, code)) return res.status(401).json({ error: 'bad_code' });
-  const site = await getSiteByOwnerEmail(email);
-  if (!site) return res.status(401).json({ error: 'bad_code' });
-  const session = await createSession({
-    role: 'owner',
-    siteId: site.id,
-    companyId: site.companyId,
-    name: site.ownerName || 'Owner',
-  });
-  setOwnerCookie(res, session);
-  res.json({ ok: true, site: publicSite(site) });
 });
 
 api.get('/sites/:siteId/snapshot', async (req, res) => {
@@ -498,12 +608,71 @@ api.post('/sites/:siteId/people', async (req, res) => {
   res.json(body);
 });
 
+api.get('/sites/:siteId/people/sample.csv', async (req, res) => {
+  const site = await siteOr404(req, res);
+  if (!site) return;
+  if (!(await requireSiteAccess(req, res, site, ['owner']))) return;
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="gate-daftar-people-sample.csv"');
+  res.send(PEOPLE_SAMPLE_CSV);
+});
+
+api.post('/sites/:siteId/people/import', importLimit, async (req, res) => {
+  const site = await siteOr404(req, res);
+  if (!site) return;
+  const session = await requireSiteAccess(req, res, site, ['owner']);
+  if (!session) return;
+  const csv = String(req.body?.csv || '');
+  if (!csv.trim()) return res.status(400).json({ error: 'csv_required' });
+  const result = await importPeopleCsv(site.id, csv, clientMeta(req, session));
+  if (result.error) return fail(res, result);
+  res.json({ added: result.added, updated: result.updated, skipped: result.skipped });
+});
+
+api.post('/sites/:siteId/people/request-add', async (req, res) => {
+  const site = await siteOr404(req, res);
+  if (!site) return;
+  const session = await requireSiteAccess(req, res, site, ['booth', 'owner']);
+  if (!session) return;
+  const { name, employeeId, managerId } = req.body || {};
+  const result = await createPersonAdd(
+    { siteId: site.id, name, employeeId, managerId, source: 'guard' },
+    clientMeta(req, session),
+  );
+  if (result.error) return fail(res, result);
+  const lang = req.body?.lang === 'en' ? 'en' : site.lang;
+  try {
+    mailPersonAdd(req, result.request, result.manager, result.magicToken, lang);
+  } catch {
+    return res.status(503).json({ error: 'mail_not_configured', request: publicPersonAdd(result.request) });
+  }
+  res.json({ request: publicPersonAdd(result.request) });
+});
+
+api.post('/sites/:siteId/gate/request-add', gateLimit, async (req, res) => {
+  const site = await siteOr404(req, res);
+  if (!site) return;
+  const { name, employeeId, managerId } = req.body || {};
+  const result = await createPersonAdd(
+    { siteId: site.id, name, employeeId, managerId, source: 'qr' },
+    clientMeta(req, null, { role: 'employee', name: 'gate' }),
+  );
+  if (result.error) return fail(res, result);
+  const lang = req.body?.lang === 'en' ? 'en' : site.lang;
+  try {
+    mailPersonAdd(req, result.request, result.manager, result.magicToken, lang);
+  } catch {
+    return res.status(503).json({ error: 'mail_not_configured', request: publicPersonAdd(result.request) });
+  }
+  res.status(200).json({ request: publicPersonAdd(result.request) });
+});
+
 api.post('/sites/:siteId/visitors', async (req, res) => {
   const site = await siteOr404(req, res);
   if (!site) return;
   const session = await requireSiteAccess(req, res, site, ['booth', 'owner']);
   if (!session) return;
-  const { name, phone, company, purpose, hostName, idNumber, cardNumber } = req.body || {};
+  const { name, phone, company, purpose, hostName, idNumber, cardNumber, vehicle } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
   const result = await createVisitor(
     {
@@ -515,6 +684,7 @@ api.post('/sites/:siteId/visitors', async (req, res) => {
       hostName,
       idNumber,
       cardNumber,
+      vehicle,
       source: 'guard',
     },
     clientMeta(req, session),
@@ -557,7 +727,7 @@ api.post('/sites/:siteId/outpass', async (req, res) => {
 api.post('/sites/:siteId/gate/visitor', gateLimit, async (req, res) => {
   const site = await siteOr404(req, res);
   if (!site) return;
-  const { name, phone, company, purpose, hostName, idNumber, cardNumber } = req.body || {};
+  const { name, phone, company, purpose, hostName, idNumber, cardNumber, vehicle } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
   const result = await createVisitor(
     {
@@ -569,6 +739,7 @@ api.post('/sites/:siteId/gate/visitor', gateLimit, async (req, res) => {
       hostName,
       idNumber,
       cardNumber,
+      vehicle,
       source: 'qr',
     },
     clientMeta(req, null, { role: 'visitor', name }),
@@ -674,6 +845,7 @@ api.get('/sites/:siteId/export', exportLimit, async (req, res) => {
     'company',
     'purpose',
     'hostName',
+    'vehicle',
     'reason',
     'managerName',
     'managerPhone',
@@ -759,11 +931,23 @@ function approveView(entry) {
 
 api.get('/approve/:token', async (req, res) => {
   const entry = await getEntryByToken(req.params.token);
-  if (!entry) return res.status(404).json({ error: 'not_found' });
-  if (isMagicTokenExpired(entry)) return res.status(410).json({ error: 'token_expired' });
-  const site = await getSite(entry.siteId);
+  if (entry) {
+    if (isMagicTokenExpired(entry)) return res.status(410).json({ error: 'token_expired' });
+    const site = await getSite(entry.siteId);
+    return res.json({
+      entry: approveView(entry),
+      site: publicSite(site),
+    });
+  }
+  const request = await getPersonAddByToken(req.params.token);
+  if (!request) return res.status(404).json({ error: 'not_found' });
+  if (isMagicTokenExpired(request) && request.status === 'waiting') {
+    return res.status(410).json({ error: 'token_expired' });
+  }
+  const site = await getSite(request.siteId);
   res.json({
-    entry: approveView(entry),
+    kind: 'person_add',
+    request: publicPersonAdd(request),
     site: publicSite(site),
   });
 });
@@ -771,16 +955,34 @@ api.get('/approve/:token', async (req, res) => {
 api.post('/approve/:token', approveLimit, async (req, res) => {
   const decision = req.body?.decision === 'deny' ? 'deny' : 'approve';
   const entryPeek = await getEntryByToken(req.params.token);
-  const result = await decideOutPass(
+  if (entryPeek) {
+    const result = await decideOutPass(
+      req.params.token,
+      decision,
+      req.body?.denyReason || '',
+      clientMeta(req, null, { role: 'manager', name: entryPeek?.managerName || 'Manager' }),
+    );
+    if (result.error === 'not_found') return res.status(404).json({ error: result.error });
+    if (result.error === 'token_expired') return res.status(410).json({ error: result.error });
+    if (result.error) return fail(res, result);
+    return res.json({ entry: approveView(result.entry) });
+  }
+  const addPeek = await getPersonAddByToken(req.params.token);
+  const result = await decidePersonAdd(
     req.params.token,
     decision,
     req.body?.denyReason || '',
-    clientMeta(req, null, { role: 'manager', name: entryPeek?.managerName || 'Manager' }),
+    clientMeta(req, null, { role: 'manager', name: addPeek ? 'Manager' : 'Manager' }),
   );
   if (result.error === 'not_found') return res.status(404).json({ error: result.error });
   if (result.error === 'token_expired') return res.status(410).json({ error: result.error });
   if (result.error) return fail(res, result);
-  res.json({ entry: approveView(result.entry) });
+  const site = await getSite(result.request.siteId);
+  res.json({
+    kind: 'person_add',
+    request: publicPersonAdd(result.request),
+    site: publicSite(site),
+  });
 });
 
 api.get('/entries/:id', async (req, res) => {

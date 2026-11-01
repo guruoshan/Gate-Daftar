@@ -15,8 +15,10 @@ export default function Gate({ t, lang, setLang }) {
   const [done, setDone] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [v, setV] = useState({ name: '', phone: '', company: '', purpose: '', hostName: '', idNumber: '', cardNumber: '' });
+  const [v, setV] = useState({ name: '', phone: '', company: '', purpose: '', hostName: '', vehicle: '', idNumber: '', cardNumber: '' });
   const [o, setO] = useState({ personId: '', managerId: '', reason: '', expectedMinutes: 60 });
+  const [notOnList, setNotOnList] = useState(false);
+  const [addForm, setAddForm] = useState({ name: '', employeeId: '', managerId: '' });
 
   useEffect(() => {
     api.publicSite(siteId).then((d) => {
@@ -51,6 +53,25 @@ export default function Gate({ t, lang, setLang }) {
   async function submitOut(e) {
     e.preventDefault();
     setErr('');
+    if (notOnList) {
+      if (!addForm.name.trim() || !addForm.managerId) {
+        setErr('req');
+        return;
+      }
+      setBusy(true);
+      try {
+        await api.gateRequestAdd(sid, { ...addForm, lang });
+        setDone({ kind: 'person_add' });
+      } catch (fail) {
+        const code = fail.body?.error;
+        if (code === 'already_on_list') setErr('already_on_list');
+        else if (code === 'manager_required') setErr('manager_required');
+        else setErr(code || 'fail');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (!o.personId || !o.managerId || !o.reason.trim()) {
       setErr('req');
       return;
@@ -95,7 +116,17 @@ export default function Gate({ t, lang, setLang }) {
       </header>
       <main className="wrap">
 
-      {done && (
+      {done && done.kind === 'person_add' && (
+        <article className="card done-card">
+          <h2>{t.addPersonTitle}</h2>
+          <p className="muted">{t.addRequested}</p>
+          <button type="button" className="ghost" onClick={() => { setDone(null); setMode(''); setNotOnList(false); }}>
+            {t.close}
+          </button>
+        </article>
+      )}
+
+      {done && done.kind !== 'person_add' && (
         <article className="card done-card">
           <h2>{t.thanks}</h2>
           <p className="muted">{t.sayToken}</p>
@@ -145,6 +176,8 @@ export default function Gate({ t, lang, setLang }) {
           <input id="vu" value={v.purpose} placeholder={t.purposePh} onChange={(e) => setV({ ...v, purpose: e.target.value })} />
           <label htmlFor="vh">{t.host}</label>
           <input id="vh" value={v.hostName} placeholder={t.hostPh} onChange={(e) => setV({ ...v, hostName: e.target.value })} />
+          <label htmlFor="vv">{t.vehicle}</label>
+          <input id="vv" value={v.vehicle} onChange={(e) => setV({ ...v, vehicle: e.target.value })} />
           <label htmlFor="vi">{t.idCard}</label>
           <input id="vi" value={v.idNumber} onChange={(e) => setV({ ...v, idNumber: e.target.value })} />
           <label htmlFor="vcd">{t.card}</label>
@@ -161,7 +194,25 @@ export default function Gate({ t, lang, setLang }) {
         <form className="card" onSubmit={submitOut}>
           <h2>{t.outpass}</h2>
           <p className="muted">{t.rosterOnly}</p>
-          {employees.length === 0 ? (
+          <button type="button" className={notOnList ? 'btn' : 'ghost'} onClick={() => setNotOnList((v) => !v)}>
+            {t.notOnList}
+          </button>
+          {notOnList ? (
+              <>
+                <label htmlFor="an">{t.personName}<span className="req">*</span></label>
+                <input id="an" value={addForm.name} onChange={(e) => setAddForm({ ...addForm, name: e.target.value })} />
+                <label htmlFor="aid">{t.empId}</label>
+                <input id="aid" value={addForm.employeeId} onChange={(e) => setAddForm({ ...addForm, employeeId: e.target.value })} />
+                <label htmlFor="am">{t.selectManager}<span className="req">*</span></label>
+                <select id="am" value={addForm.managerId} onChange={(e) => setAddForm({ ...addForm, managerId: e.target.value })} disabled={managers.length === 0}>
+                  <option value="">{t.selectManager}</option>
+                  {managers.map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+                </select>
+                {managers.length === 0 && <p className="field-err">{t.needManagerFirst}</p>}
+              </>
+          ) : employees.length === 0 ? (
             <p className="field-err">{t.noRoster}</p>
           ) : (
             <>
@@ -197,10 +248,13 @@ export default function Gate({ t, lang, setLang }) {
               </div>
             </>
           )}
-          {err && <div className="field-err">{err === 'email_domain_not_allowed' ? t.emailDomainBad : t.required}</div>}
+          {err === 'already_on_list' && <div className="field-err">{t.alreadyOnList}</div>}
+          {err && err !== 'already_on_list' && (
+            <div className="field-err">{err === 'email_domain_not_allowed' ? t.emailDomainBad : t.required}</div>
+          )}
           <div className="cta-row">
             <button className="ghost" type="button" onClick={() => setMode('')}>{t.cancel}</button>
-            <button className="btn" type="submit" disabled={busy || employees.length === 0}>{busy ? t.sending : t.submit}</button>
+            <button className="btn" type="submit" disabled={busy || (!notOnList && employees.length === 0) || (notOnList && managers.length === 0)}>{busy ? t.sending : t.submit}</button>
           </div>
         </form>
       )}

@@ -1,23 +1,43 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 export default function Landing({ t }) {
+  const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
+
+  useEffect(() => {
+    function on() {
+      setOnline(true);
+    }
+    function off() {
+      setOnline(false);
+    }
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => {
+      window.removeEventListener('online', on);
+      window.removeEventListener('offline', off);
+    };
+  }, []);
+
   return (
     <main className="wrap">
       <section className="hero">
         <div className="kicker">{t.notVms}</div>
         <h1>{t.hero}</h1>
         <p className="lede">{t.sub}</p>
+        <p className="muted">{t.homeDoors}</p>
+        <p className="muted">{online ? t.online : t.offline}</p>
         <div className="cta-row">
-          <Link className="btn" to="/setup" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
-            {t.createSite}
-          </Link>
-          <Link className="ghost" to="/booth/demo" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
-            {t.openDemo}
+          <Link className="btn" to="/gate" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
+            {t.gateDoor}
           </Link>
           <Link className="ghost" to="/login" style={{ display: 'inline-grid', placeItems: 'center', textDecoration: 'none' }}>
-            {t.ownerLogin}
+            {t.adminDoor}
           </Link>
         </div>
+        <p className="muted">
+          <Link to="/booth/demo">{t.openDemo}</Link>
+        </p>
       </section>
 
       <div className="grid-2">
