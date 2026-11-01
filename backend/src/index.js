@@ -672,7 +672,7 @@ api.post('/sites/:siteId/visitors', async (req, res) => {
   if (!site) return;
   const session = await requireSiteAccess(req, res, site, ['booth', 'owner']);
   if (!session) return;
-  const { name, phone, company, purpose, hostName, idNumber, cardNumber } = req.body || {};
+  const { name, phone, company, purpose, hostName, idNumber, cardNumber, vehicle } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
   const result = await createVisitor(
     {
@@ -684,6 +684,7 @@ api.post('/sites/:siteId/visitors', async (req, res) => {
       hostName,
       idNumber,
       cardNumber,
+      vehicle,
       source: 'guard',
     },
     clientMeta(req, session),
@@ -726,7 +727,7 @@ api.post('/sites/:siteId/outpass', async (req, res) => {
 api.post('/sites/:siteId/gate/visitor', gateLimit, async (req, res) => {
   const site = await siteOr404(req, res);
   if (!site) return;
-  const { name, phone, company, purpose, hostName, idNumber, cardNumber } = req.body || {};
+  const { name, phone, company, purpose, hostName, idNumber, cardNumber, vehicle } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name_required' });
   const result = await createVisitor(
     {
@@ -738,6 +739,7 @@ api.post('/sites/:siteId/gate/visitor', gateLimit, async (req, res) => {
       hostName,
       idNumber,
       cardNumber,
+      vehicle,
       source: 'qr',
     },
     clientMeta(req, null, { role: 'visitor', name }),
@@ -843,6 +845,7 @@ api.get('/sites/:siteId/export', exportLimit, async (req, res) => {
     'company',
     'purpose',
     'hostName',
+    'vehicle',
     'reason',
     'managerName',
     'managerPhone',

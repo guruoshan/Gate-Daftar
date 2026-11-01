@@ -6,7 +6,7 @@
   --ink: #1c1915;
   --muted: #5f584e;
   --line: #ddd6c8;
-  --accent: #1f4d3a;
+  --accent: #1f6b4f;
   --accent-2: #1f4d3a;
   --ok: #1f7a4d;
   --ok-bg: #e6f4ea;
@@ -16,7 +16,7 @@
   --bad-bg: #fee4e2;
   --in: #175cd3;
   --in-bg: #eff6ff;
-  --cta: #1f4d3a;
+  --cta: #1f6b4f;
   --cta-ink: #f7f4ee;
   --shadow: 0 10px 30px rgba(28, 25, 21, 0.08);
   --r: 14px;
@@ -128,7 +128,7 @@ button:disabled {
 .btn-in {
   border: 0;
   border-radius: 12px;
-  min-height: 48px;
+  min-height: 56px;
   padding: 0 16px;
   font-weight: 650;
   font-size: 1rem;
@@ -140,6 +140,7 @@ button:disabled {
   background: var(--card);
   color: var(--ink);
   border: 1px solid var(--line);
+  min-height: 48px;
 }
 
 .btn {
@@ -174,8 +175,8 @@ a.btn-ok {
 }
 
 .btn-in {
-  background: var(--accent-2);
-  color: #042c3a;
+  background: var(--in);
+  color: #fff;
 }
 
 .btn:hover,
@@ -580,7 +581,7 @@ textarea {
 }
 
 .pin-pad button {
-  min-height: 56px;
+  min-height: 64px;
   background: var(--card-2);
   color: var(--ink);
   border: 1px solid var(--line);
@@ -785,7 +786,7 @@ textarea {
 }
 
 .stat-num {
-  font-size: 1.8rem;
+  font-size: 2.2rem;
   font-weight: 750;
   letter-spacing: -0.04em;
   margin-top: 4px;

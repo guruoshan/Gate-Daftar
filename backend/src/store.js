@@ -526,6 +526,7 @@ const entryKeys = [
   'hostName',
   'idNumber',
   'cardNumber',
+  'vehicle',
   'employeeId',
   'personId',
   'reason',
@@ -1080,6 +1081,7 @@ export async function createVisitor(input, meta = {}) {
     hostName: String(input.hostName || '').trim(),
     idNumber: String(input.idNumber || '').trim(),
     cardNumber: String(input.cardNumber || '').trim(),
+    vehicle: String(input.vehicle || '').trim(),
     employeeId: '',
     personId: '',
     reason: '',
@@ -1105,6 +1107,7 @@ export async function createVisitor(input, meta = {}) {
     inAt: null,
     dueAt: null,
   };
+  if (entry.vehicle.length > 32) return { error: 'vehicle_long' };
   await insertRow('entries', entryKeys, entry);
   await note(input.siteId, 'visitor_created', `${entry.name} is waiting at the gate`, { entryId: entry.id, source: entry.source }, meta.actor, meta.ip, meta.device);
   emitEntry(entry);
@@ -1143,6 +1146,7 @@ export async function createOutPass(input, meta = {}) {
     hostName: '',
     idNumber: '',
     cardNumber: '',
+    vehicle: '',
     employeeId: person.employeeId || String(input.employeeId || '').trim(),
     personId: person.id,
     reason: String(input.reason || '').trim(),

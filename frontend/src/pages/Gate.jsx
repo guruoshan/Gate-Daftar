@@ -15,7 +15,7 @@ export default function Gate({ t, lang, setLang }) {
   const [done, setDone] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [v, setV] = useState({ name: '', phone: '', company: '', purpose: '', hostName: '', idNumber: '', cardNumber: '' });
+  const [v, setV] = useState({ name: '', phone: '', company: '', purpose: '', hostName: '', vehicle: '', idNumber: '', cardNumber: '' });
   const [o, setO] = useState({ personId: '', managerId: '', reason: '', expectedMinutes: 60 });
   const [notOnList, setNotOnList] = useState(false);
   const [addForm, setAddForm] = useState({ name: '', employeeId: '', managerId: '' });
@@ -176,6 +176,8 @@ export default function Gate({ t, lang, setLang }) {
           <input id="vu" value={v.purpose} placeholder={t.purposePh} onChange={(e) => setV({ ...v, purpose: e.target.value })} />
           <label htmlFor="vh">{t.host}</label>
           <input id="vh" value={v.hostName} placeholder={t.hostPh} onChange={(e) => setV({ ...v, hostName: e.target.value })} />
+          <label htmlFor="vv">{t.vehicle}</label>
+          <input id="vv" value={v.vehicle} onChange={(e) => setV({ ...v, vehicle: e.target.value })} />
           <label htmlFor="vi">{t.idCard}</label>
           <input id="vi" value={v.idNumber} onChange={(e) => setV({ ...v, idNumber: e.target.value })} />
           <label htmlFor="vcd">{t.card}</label>

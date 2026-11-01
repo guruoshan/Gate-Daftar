@@ -89,27 +89,25 @@ export default function CompanyHome({ t }) {
           {t.logOutOwner}
         </button>
       </div>
-      <ul className="card">
-        {sites.map((s) => (
-          <li key={s.id} style={{ marginBottom: 12 }}>
-            <strong>{s.name}</strong>
-            {shownPin && pinSiteId === s.id && (
-              <>
-                <div className="token-xl">{shownPin}</div>
-                <p className="muted">{t.newPinOnce}</p>
-              </>
-            )}
-            <div className="cta-row">
-              <Link to={`/booth/${s.slug}`}>{t.openBooth}</Link>
-              <Link to={`/setup/${s.slug}`}>{t.people}</Link>
-              <Link to={`/reports/${s.slug}`}>{t.reports || t.download}</Link>
-              <button type="button" className="ghost" onClick={() => resetPin(s.slug, s.id)}>
-                {t.resetGatePin}
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
+      {sites.map((s) => (
+        <article className="card" key={s.id}>
+          <strong>{s.name}</strong>
+          {shownPin && pinSiteId === s.id && (
+            <>
+              <div className="token-xl">{shownPin}</div>
+              <p className="muted">{t.newPinOnce}</p>
+            </>
+          )}
+          <div className="cta-row">
+            <Link to={`/booth/${s.slug}`}>{t.openBooth}</Link>
+            <Link to={`/setup/${s.slug}`}>{t.people}</Link>
+            <Link to={`/reports/${s.slug}`}>{t.reports || t.download}</Link>
+            <button type="button" className="ghost" onClick={() => resetPin(s.slug, s.id)}>
+              {t.resetGatePin}
+            </button>
+          </div>
+        </article>
+      ))}
       <form className="card" onSubmit={addGate}>
         <label htmlFor="gn">{t.gateName}</label>
         <input id="gn" value={gateName} onChange={(e) => setGateName(e.target.value)} />
