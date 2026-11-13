@@ -1,0 +1,29 @@
+{
+  "name": "gate-daftar-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "migrate": "node -e \"import('./src/db.js').then(async m=>{await m.runMigrations();console.log('migrations applied');await m.closePool()})\"",
+    "db:import": "node scripts/import-db-json.mjs",
+    "backup": "node scripts/backup.mjs",
+    "restore": "node scripts/restore.mjs",
+    "verify-audit": "node scripts/verify-audit.mjs",
+    "retention-report": "node scripts/retention-report.mjs",
+    "rotate-pins": "node scripts/rotate-pins.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "helmet": "^8.3.0",
+    "nodemailer": "^10.3.1",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "supertest": "^7.1.4",
+    "vitest": "^3.2.4"
+  }
+}

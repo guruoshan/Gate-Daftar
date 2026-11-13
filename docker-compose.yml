@@ -1,0 +1,53 @@
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: gate
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the .env file}
+      POSTGRES_DB: gate_daftar
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U gate -d gate_daftar']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgres://gate:${DB_PASSWORD:?Set DB_PASSWORD in the .env file}@db:5432/gate_daftar
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in the .env file}
+      SMTP_URL: ${SMTP_URL:?Set SMTP_URL in the .env file}
+      MAIL_FROM: ${MAIL_FROM:-Gate Daftar <no-reply@localhost>}
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      # Change this to the real public address before going live.
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:5173}
+      ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:-http://localhost:5173}
+      DEMO_PIN: ''
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - '3001:3001'
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        API_PROXY_TARGET: http://api:3001
+    environment:
+      API_PROXY_TARGET: http://api:3001
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
+    depends_on:
+      - api
+    restart: unless-stopped
+    ports:
+      - '5173:5173'
+
+volumes:
+  pgdata:

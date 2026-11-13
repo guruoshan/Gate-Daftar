@@ -1,0 +1,32 @@
+# Render "Blueprint": creates the database and the website together in one go.
+databases:
+  - name: gate-daftar-db
+    plan: free
+    databaseName: gate_daftar
+    user: gate
+
+services:
+  - type: web
+    name: gate-daftar
+    runtime: node
+    plan: free
+    healthCheckPath: /api/health
+    buildCommand: cd frontend && npm install --include=dev && npm run build && cd ../backend && npm install --omit=dev
+    startCommand: cd backend && node src/index.js
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gate-daftar-db
+          property: connectionString
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: TRUST_PROXY
+        value: "1"
+      # TEST MODE: the sign-in code is shown on screen because email is not set up yet.
+      # Do not put real company data in until email is set up and this line is removed.
+      - key: ALLOW_DEV_CODES
+        value: "1"

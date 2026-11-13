@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: gate
+          POSTGRES_PASSWORD: gate
+          POSTGRES_DB: gate_daftar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gate -d gate_daftar_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://gate:gate@localhost:5432/gate_daftar_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install and test the server
+        working-directory: backend
+        run: npm ci && npm test
+      - name: Install and build the website
+        working-directory: frontend
+        run: npm ci && npm run build

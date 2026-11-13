@@ -1,0 +1,85 @@
+import { useEffect, useRef, useState } from 'react';
+import { api, streamUrl } from './api.js';
+
+export function useLive(siteId, lang) {
+  const [site, setSite] = useState(null);
+  const [people, setPeople] = useState([]);
+  const [entries, setEntries] = useState([]);
+  const [live, setLive] = useState(false);
+  const esRef = useRef(null);
+
+  useEffect(() => {
+    if (!siteId) return undefined;
+    let stop = false;
+    api.snapshot(siteId, lang)
+      .then((d) => {
+        if (stop) return;
+        setSite(d.site);
+        setPeople(d.people || []);
+        setEntries(d.entries || []);
+      })
+      .catch(() => {});
+
+    const es = new EventSource(streamUrl(siteId, lang), { withCredentials: true });
+    esRef.current = es;
+    es.addEventListener('hello', () => setLive(true));
+    es.addEventListener('delta', (ev) => {
+      const d = JSON.parse(ev.data);
+      if (d.entity === 'entry' && d.entry) {
+        setEntries((prev) => {
+          const i = prev.findIndex((e) => e.id === d.entry.id);
+          if (i === -1) return [d.entry, ...prev];
+          const next = prev.slice();
+          next[i] = { ...next[i], ...d.entry };
+          return next;
+        });
+      } else if (d.entity === 'people' && Array.isArray(d.people)) {
+        setPeople(d.people);
+      }
+      setLive(true);
+    });
+    es.onerror = () => setLive(false);
+    return () => {
+      stop = true;
+      es.close();
+    };
+  }, [siteId, lang]);
+
+  return { site, people, entries, live, setEntries, setPeople };
+}
+
+export function statusOf(entry) {
+  return entry?.status || '';
+}
+
+export function isOverdue(entry) {
+  if (!entry || entry.kind !== 'outpass' || entry.status !== 'out') return false;
+  if (!entry.dueAt) return false;
+  return new Date(entry.dueAt).getTime() < Date.now();
+}
+
+export function waitingList(entries) {
+  return entries.filter((e) => e.status === 'waiting_admit' || e.status === 'waiting_approval' || e.status === 'waiting_admin');
+}
+
+export function approvedList(entries) {
+  return entries.filter((e) => e.status === 'approved_out');
+}
+
+export function insideList(entries) {
+  return entries.filter((e) => e.status === 'inside');
+}
+
+export function fmtTime(iso, lang, timeZone) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleTimeString(lang === 'en' ? 'en-GB' : 'ar-SA', {
+      timeZone: timeZone || 'Asia/Riyadh',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    });
+  } catch {
+    return iso.slice(11, 16);
+  }
+}
